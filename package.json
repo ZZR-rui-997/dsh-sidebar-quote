@@ -1,0 +1,58 @@
+{
+  "name": "dsh-sidebar-quote",
+  "version": "1.0.1",
+  "type": "module",
+  "description": "Select text in a sidebar document preview and quote it straight into the composer.",
+  "license": "MIT",
+  "author": "ZZR-rui-997",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZZR-rui-997/dsh-sidebar-quote.git"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "deepseek-harness",
+    "cordis",
+    "quote",
+    "prompt"
+  ],
+  "engines": {
+    "dsh": ">=0.2.2-rc.1",
+    "node": ">=22.0.0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.png"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "icon.png",
+    "README.md",
+    "README.zh.md",
+    "ASSET_LICENSE.md",
+    "LICENSE",
+    "docs",
+    "preview.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "icon": "./icon.png"
+}

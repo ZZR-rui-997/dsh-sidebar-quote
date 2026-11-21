@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300">
+  <!-- dsh-sidebar-quote feature preview: quote from a document, the whale rewrites, you confirm -->
+  <rect width="640" height="300" rx="20" fill="#F4F7FF"/>
+
+  <!-- left: document preview card with a selection -->
+  <rect x="40" y="46" width="250" height="208" rx="12" fill="#FFFFFF" stroke="#C6D4F5"/>
+  <rect x="40" y="46" width="250" height="30" rx="12" fill="#E3EBFF"/>
+  <rect x="40" y="64" width="250" height="12" fill="#E3EBFF"/>
+  <circle cx="58" cy="61" r="5" fill="#4D6BFE"/>
+  <rect x="70" y="56" width="120" height="10" rx="5" fill="#9DB4E8"/>
+  <rect x="60" y="94" width="210" height="9" rx="4.5" fill="#D9E2F7"/>
+  <rect x="60" y="111" width="196" height="9" rx="4.5" fill="#D9E2F7"/>
+  <rect x="60" y="128" width="150" height="20" rx="6" fill="#CFE0FF"/>
+  <rect x="60" y="156" width="210" height="9" rx="4.5" fill="#D9E2F7"/>
+  <rect x="60" y="173" width="184" height="9" rx="4.5" fill="#D9E2F7"/>
+  <rect x="60" y="190" width="140" height="9" rx="4.5" fill="#D9E2F7"/>
+
+  <!-- floating "quote & ask" button anchored to the selection -->
+  <rect x="214" y="120" width="96" height="24" rx="12" fill="#4D6BFE"/>
+  <circle cx="230" cy="132" r="8" fill="#FFFFFF"/>
+  <path d="M226.5 132h7M230 128.5v7" stroke="#4D6BFE" stroke-width="1.8" stroke-linecap="round"/>
+  <rect x="244" y="126" width="58" height="12" rx="6" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- arrow from document to composer -->
+  <path d="M312 150 C 350 150, 360 150, 392 150" stroke="#9DB4E8" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <path d="M386 143 L 396 150 L 386 157" stroke="#9DB4E8" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- right: composer with read-only quote chip + question -->
+  <rect x="400" y="46" width="200" height="208" rx="12" fill="#FFFFFF" stroke="#C6D4F5"/>
+  <rect x="400" y="46" width="200" height="30" rx="12" fill="#E3EBFF"/>
+  <rect x="400" y="64" width="200" height="12" fill="#E3EBFF"/>
+  <circle cx="418" cy="61" r="5" fill="#4D6BFE"/>
+  <rect x="430" y="56" width="110" height="10" rx="5" fill="#9DB4E8"/>
+
+  <!-- read-only quote chip -->
+  <rect x="414" y="90" width="172" height="58" rx="10" fill="#EEF3FF" stroke="#B9C9F2" stroke-dasharray="0"/>
+  <rect x="414" y="90" width="4" height="58" rx="2" fill="#4D6BFE"/>
+  <rect x="428" y="102" width="140" height="8" rx="4" fill="#AFC3EE"/>
+  <rect x="428" y="116" width="120" height="8" rx="4" fill="#AFC3EE"/>
+  <rect x="428" y="130" width="88" height="8" rx="4" fill="#AFC3EE"/>
+
+  <!-- user question text -->
+  <rect x="414" y="156" width="150" height="9" rx="4.5" fill="#4A5570"/>
+  <rect x="414" y="172" width="104" height="9" rx="4.5" fill="#4A5570"/>
+
+  <!-- whale avatar button -->
+  <g>
+    <ellipse cx="576" cy="230" rx="22" ry="17" fill="#4D6BFE"/>
+    <path d="M590 220c5-5.8 10.6-7.6 13.3-5.6-2.3 2.9-3.5 6-3.5 8.9 0 2.9 1.2 6 3.5 8.9-2.7 2-8.3.2-13.3-5.6Z" fill="#3D5FD9"/>
+    <ellipse cx="570" cy="234" rx="13" ry="7" fill="#EAF0FF" opacity="0.95"/>
+    <ellipse cx="564" cy="226" rx="3.4" ry="3.9" fill="#FFFFFF"/>
+    <circle cx="564.6" cy="227" r="2" fill="#16203A"/>
+    <ellipse cx="576" cy="226" rx="3" ry="3.5" fill="#FFFFFF"/>
+    <circle cx="576.5" cy="227" r="1.8" fill="#16203A"/>
+    <path d="M568.5 232.5c1.7 1.6 4.4 1.6 6.1 0" stroke="#16203A" stroke-width="1.5" stroke-linecap="round" fill="none" opacity="0.7"/>
+  </g>
+
+  <!-- preview panel hint -->
+  <rect x="404" y="212" width="146" height="34" rx="10" fill="#EEF3FF" stroke="#B9C9F2"/>
+  <rect x="414" y="222" width="76" height="8" rx="4" fill="#7E97D6"/>
+  <rect x="414" y="234" width="52" height="6" rx="3" fill="#AFC3EE"/>
+  <rect x="500" y="220" width="42" height="18" rx="9" fill="#4D6BFE"/>
+</svg>

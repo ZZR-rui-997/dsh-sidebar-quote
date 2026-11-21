@@ -1,0 +1,83 @@
+# dsh-sidebar-quote
+
+Select text in the sidebar document preview (Markdown, PDF, Office, plain text,
+code) and ask about it right there: the selection enters the composer as a
+read-only quote chip with your question attached. A little whale beside the
+composer rewrites your draft into an executable prompt — and every rewrite is
+reviewed by you before it touches anything.
+
+## What it does
+
+- **Quote & ask** — select text in a document preview, press the floating
+  button, type your question, press Enter. The quote goes into the composer as
+  an atomic read-only chip (`insertQuote`), so the model (and you) can always
+  tell what you were asking about. The source filename is shown on the card
+  when the preview provides one. Quotes longer than 8000 characters are
+  truncated and the card tells you so.
+- **Prompt optimization (the whale)** — press the whale to send the draft to a
+  two-stage rewrite:
+  1. *Analyze* finds real execution gaps (missing task boundary, background,
+     constraints, output form, or acceptance criteria). If the gaps would
+     change the result completely, it asks at most two questions first.
+     If there is nothing worth closing, it says so and leaves your draft alone.
+  2. *Generate* rewrites the draft to close exactly those gaps, longer or
+     shorter as needed — no fixed template, no fixed length multiplier.
+     A deterministic gate flags invented facts, placeholders and copy-only
+     rewrites; violations trigger one repair round before you ever see it.
+  3. You get a **preview panel** (draggable, action buttons always visible)
+     listing what changed and which gap each change closes. Nothing is written
+     to the composer until you press "Write to composer". One click on ↩
+     restores your original draft.
+- Quotes stay read-only through optimization: the rewrite replaces your words,
+  never the quoted originals.
+
+## Recommended usage
+
+The optimizer does not see your conversation history — only the draft and any
+quotes in it. So:
+
+- **First message of a project, or a standalone task**: press the whale; the
+  rewrite adds the background it needs.
+- **Follow-up turns**: send as-is; the conversation already carries the
+  context.
+- **A follow-up that could be misunderstood**: quote the previous conclusion
+  into the composer, then press the whale — quotes are the context channel.
+
+## Requirements
+
+- DSH `>=0.2.2-rc.1`, Node `>=22`
+- Uses the agent's currently selected model; two model calls per optimization
+  (analyze + generate), each capped (2048 / 8192 output tokens). No data leaves
+  the model provider you already use.
+
+## Install
+
+From npm (once published):
+
+```
+dsh plugin add dsh-sidebar-quote
+```
+
+Or from a local checkout:
+
+```
+dsh plugin add <path-to-this-repo>
+```
+
+## Privacy
+
+Your draft (and any quoted text) is sent to the selected model for rewriting.
+Nothing is stored beyond the draft itself; the plugin keeps no history of its
+own.
+
+## License & assets
+
+Code and hand-drawn SVGs (icon.svg, preview.svg): MIT (see LICENSE). The
+bitmap icons (icon.png / avatar.png) are AI-derived fan works of a community
+mascot, distributed under CC BY-NC-SA 4.0 — see
+ASSET_LICENSE.md. "DeepSeek" and the whale logo are trademarks of DeepSeek;
+this plugin is unofficial and not endorsed by DeepSeek.
+
+## License
+
+MIT
