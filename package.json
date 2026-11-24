@@ -1,8 +1,8 @@
 {
   "name": "dsh-sidebar-quote",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
-  "description": "Select text in a sidebar document preview and quote it straight into the composer.",
+  "description": "Quote sidebar document selections, frame pictures to ask for changes, and optimize prompts — all from the composer.",
   "license": "MIT",
   "author": "ZZR-rui-997",
   "repository": {

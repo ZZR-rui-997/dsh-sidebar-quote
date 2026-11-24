@@ -220,6 +220,172 @@ window.__ModuleLoader__.load({
       };
     }
 
+    // ---- image regions ------------------------------------------------------
+    // A PDF page is one canvas, so a picture inside a Word or PPT document has
+    // no element of its own to click. The honest target is the rectangle the
+    // user drags over it: the crop happens here, the host half writes it to
+    // disk, and the agent can then open exactly the pixels that were framed.
+    const PDF_PREVIEW_SELECTOR = 'section[data-pdf-preview]';
+    // The document preview's own PdfPage renders `div[data-pdf-page="<n>"]`; the
+    // `data-page-number` attribute belongs to pdf.js' bundled viewer, which this
+    // preview does not use. Getting this wrong fails silently — no page means no
+    // crop, and no crop means the card never opens.
+    const PDF_PAGE_SELECTOR = 'section[data-pdf-preview] [data-pdf-page]';
+    const CROP_MAX_EDGE = 1400;
+    const CROP_MAX_CHARS = 6000000;
+    const CROP_MIN_SIDE = 8;
+
+    // The crop handle follows the preview's scrollport: it is only offered where
+    // pages are actually rendered, and never floats over an unrelated tab.
+    function pdfScrollport() {
+      const section = document.querySelector(PDF_PREVIEW_SELECTOR);
+      if (!section || !section.isConnected) return null;
+      const scroller = section.closest('[data-textpreview-body]');
+      const box = (scroller || section).getBoundingClientRect();
+      if (!box || box.width < 40 || box.height < 40) return null;
+      return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+    }
+
+    function pdfPageAt(x, y) {
+      const pages = document.querySelectorAll(PDF_PAGE_SELECTOR);
+      for (let index = 0; index < pages.length; index += 1) {
+        const page = pages[index];
+        const box = page.getBoundingClientRect();
+        if (box.width > 0 && box.height > 0
+          && x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) {
+          return { page, box };
+        }
+      }
+      return null;
+    }
+
+    // A page under the drag: the one holding the middle of the box, else the one
+    // it overlaps most, else the nearest one. Dragging across the gap between two
+    // pages should still land on the page the user mostly covered, not on nothing.
+    function pdfPageForBox(box) {
+      const pages = document.querySelectorAll(PDF_PAGE_SELECTOR);
+      const found = [];
+      for (let index = 0; index < pages.length; index += 1) {
+        const page = pages[index];
+        const rect = page.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+        found.push({ page, box: rect });
+      }
+      if (found.length === 0) return null;
+      const middleX = (box.left + box.right) / 2;
+      const middleY = (box.top + box.bottom) / 2;
+      const holding = pdfPageAt(middleX, middleY);
+      if (holding) return holding;
+      const overlapOf = (rect) => {
+        const width = Math.min(box.right, rect.right) - Math.max(box.left, rect.left);
+        const height = Math.min(box.bottom, rect.bottom) - Math.max(box.top, rect.top);
+        return width > 0 && height > 0 ? width * height : 0;
+      };
+      const distanceOf = (rect) => {
+        const dx = middleX < rect.left ? rect.left - middleX : (middleX > rect.right ? middleX - rect.right : 0);
+        const dy = middleY < rect.top ? rect.top - middleY : (middleY > rect.bottom ? middleY - rect.bottom : 0);
+        return dx * dx + dy * dy;
+      };
+      let best = null;
+      let bestOverlap = 0;
+      for (let index = 0; index < found.length; index += 1) {
+        const area = overlapOf(found[index].box);
+        if (area > bestOverlap) { best = found[index]; bestOverlap = area; }
+      }
+      if (best) return best;
+      let nearest = null;
+      let nearestDistance = Infinity;
+      for (let index = 0; index < found.length; index += 1) {
+        const distance = distanceOf(found[index].box);
+        if (distance < nearestDistance) { nearest = found[index]; nearestDistance = distance; }
+      }
+      return nearest;
+    }
+
+    function pageCanvas(page) {
+      const canvases = page.querySelectorAll('canvas');
+      let best = null;
+      let bestArea = 0;
+      for (let index = 0; index < canvases.length; index += 1) {
+        const canvas = canvases[index];
+        const area = (canvas.width || 0) * (canvas.height || 0);
+        if (area > bestArea) {
+          best = canvas;
+          bestArea = area;
+        }
+      }
+      return best;
+    }
+
+    // Position inside the printed page as a fraction: the only way to name a
+    // place that survives a different zoom, window size or page count.
+    function pageFraction(box, x, y) {
+      const clamp = (value) => Math.min(1, Math.max(0, value));
+      return {
+        x: clamp((x - box.left) / (box.width || 1)),
+        y: clamp((y - box.top) / (box.height || 1)),
+      };
+    }
+
+    function cropImage(page, box, startX, startY, endX, endY) {
+      const canvas = pageCanvas(page);
+      if (!canvas || !canvas.width || !canvas.height) return null;
+      // Map viewport coordinates onto the canvas through the canvas' own display
+      // box, not the page's: a fit-width zoom scales the surface, so the two can
+      // disagree. Inside that box the box may hang over the edge, hence the clamp.
+      const display = typeof canvas.getBoundingClientRect === 'function'
+        ? canvas.getBoundingClientRect()
+        : box;
+      const displayWidth = display && display.width ? display.width : 0;
+      const displayHeight = display && display.height ? display.height : 0;
+      if (!displayWidth || !displayHeight) return null;
+      const left = Math.max(0, Math.min(startX, endX) - display.left);
+      const top = Math.max(0, Math.min(startY, endY) - display.top);
+      const right = Math.min(displayWidth, Math.max(startX, endX) - display.left);
+      const bottom = Math.min(displayHeight, Math.max(startY, endY) - display.top);
+      const width = right - left;
+      const height = bottom - top;
+      if (width < CROP_MIN_SIDE || height < CROP_MIN_SIDE) return null;
+      const scaleX = canvas.width / displayWidth;
+      const scaleY = canvas.height / displayHeight;
+      const sx = Math.round(left * scaleX);
+      const sy = Math.round(top * scaleY);
+      const sw = Math.max(1, Math.round(width * scaleX));
+      const sh = Math.max(1, Math.round(height * scaleY));
+      const shrink = Math.min(1, CROP_MAX_EDGE / Math.max(sw, sh));
+      const outWidth = Math.max(1, Math.round(sw * shrink));
+      const outHeight = Math.max(1, Math.round(sh * shrink));
+      const target = document.createElement('canvas');
+      target.width = outWidth;
+      target.height = outHeight;
+      const painter = target.getContext && target.getContext('2d');
+      if (!painter || typeof painter.drawImage !== 'function') return null;
+      painter.drawImage(canvas, sx, sy, sw, sh, 0, 0, outWidth, outHeight);
+      const dataUrl = typeof target.toDataURL === 'function'
+        ? target.toDataURL('image/jpeg', 0.86)
+        : '';
+      if (!dataUrl || dataUrl.indexOf('base64,') < 0 || dataUrl.length > CROP_MAX_CHARS) return null;
+      return { dataUrl, width: outWidth, height: outHeight };
+    }
+
+    function pageNumberOf(page) {
+      const raw = page && page.getAttribute
+        ? (page.getAttribute('data-pdf-page') || page.getAttribute('data-page-number'))
+        : '';
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
+
+    // What the composer shows for a framed picture: the page and the framed part
+    // of it, in the same words the agent will use to find the picture again.
+    function cropLabel(source, pageNumber, start, end) {
+      const pct = (value) => `${Math.round(value * 100)}%`;
+      const horizontal = `横向 ${pct(Math.min(start.x, end.x))}–${pct(Math.max(start.x, end.x))}`;
+      const vertical = `纵向 ${pct(Math.min(start.y, end.y))}–${pct(Math.max(start.y, end.y))}`;
+      const where = source ? `${source} 第 ${pageNumber} 页` : `第 ${pageNumber} 页`;
+      return `图片区域 · ${where} · ${horizontal}，${vertical}`;
+    }
+
     function cardGeometry(rect) {
       const width = 320;
       const maxLeft = Math.max(8, window.innerWidth - width - 12);
@@ -393,6 +559,12 @@ window.__ModuleLoader__.load({
       const [composing, setComposing] = React.useState(false);
       const [draft, setDraft] = React.useState('');
       const [status, setStatus] = React.useState(null);
+      // Image framing: `previewBox` is where the crop handle may appear,
+      // `cropping` is the drag mode, `marquee` is the rectangle being drawn.
+      const [previewBox, setPreviewBox] = React.useState(null);
+      const [cropping, setCropping] = React.useState(false);
+      const [marquee, setMarquee] = React.useState(null);
+      const cropRef = React.useRef(null);
 
       const composingRef = React.useRef(false);
       const statusRef = React.useRef(null);
@@ -509,6 +681,153 @@ window.__ModuleLoader__.load({
         if (composing && textareaRef.current) textareaRef.current.focus();
       }, [composing]);
 
+      // Track the PDF preview so the crop handle appears over it and disappears
+      // with it. A short poll keeps up with tab switches, which fire no event we
+      // could listen to.
+      React.useEffect(() => {
+        const update = () => {
+          const box = pdfScrollport();
+          setPreviewBox((previous) => {
+            if (!box) return previous === null ? previous : null;
+            if (previous
+              && Math.abs(previous.left - box.left) < 1
+              && Math.abs(previous.top - box.top) < 1
+              && Math.abs(previous.right - box.right) < 1
+              && Math.abs(previous.bottom - box.bottom) < 1) return previous;
+            return box;
+          });
+        };
+        update();
+        const timer = window.setInterval(update, 600);
+        window.addEventListener('scroll', update, true);
+        window.addEventListener('resize', update);
+        return () => {
+          window.clearInterval(timer);
+          window.removeEventListener('scroll', update, true);
+          window.removeEventListener('resize', update);
+        };
+      }, []);
+
+      const startCrop = () => {
+        if (cropping) return;
+        setComposing(false);
+        setDraft('');
+        setSelection(null);
+        cropRef.current = null;
+        setMarquee(null);
+        setCropping(true);
+      };
+
+      const cancelCrop = () => {
+        cropRef.current = null;
+        setMarquee(null);
+        setCropping(false);
+      };
+
+      // Escape leaves framing mode the same way it leaves the question card.
+      // A release outside the drag surface must also finish the box, otherwise
+      // the user is stuck in framing mode with a rectangle they cannot commit.
+      React.useEffect(() => {
+        if (!cropping) return undefined;
+        const onKeyDown = (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault();
+          cropRef.current = null;
+          setMarquee(null);
+          setCropping(false);
+        };
+        const onPointerUp = () => {
+          if (!cropRef.current) return;
+          finishCrop();
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        window.addEventListener('mouseup', onPointerUp, true);
+        return () => {
+          window.removeEventListener('keydown', onKeyDown, true);
+          window.removeEventListener('mouseup', onPointerUp, true);
+        };
+      }, [cropping]);
+
+      const cropPointerDown = (event) => {
+        if (event.button !== undefined && event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const startX = event.clientX;
+        const startY = event.clientY;
+        cropRef.current = { startX, startY, endX: startX, endY: startY };
+        setMarquee({ left: startX, top: startY, width: 0, height: 0 });
+      };
+
+      const cropPointerMove = (event) => {
+        const drag = cropRef.current;
+        if (!drag) return;
+        drag.endX = event.clientX;
+        drag.endY = event.clientY;
+        setMarquee({
+          left: Math.min(drag.startX, drag.endX),
+          top: Math.min(drag.startY, drag.endY),
+          width: Math.abs(drag.endX - drag.startX),
+          height: Math.abs(drag.endY - drag.startY),
+        });
+      };
+
+      const finishCrop = () => {
+        const drag = cropRef.current;
+        cropRef.current = null;
+        setMarquee(null);
+        setCropping(false);
+        if (!drag) return;
+        const box = {
+          left: Math.min(drag.startX, drag.endX),
+          top: Math.min(drag.startY, drag.endY),
+          right: Math.max(drag.startX, drag.endX),
+          bottom: Math.max(drag.startY, drag.endY),
+        };
+        // Every way out of here says something: a silent return looks like the
+        // feature is broken, which is exactly how it was reported.
+        const complain = (text, x, y) => {
+          setStatus({ text, rect: { left: x, right: x, top: y, bottom: y } });
+        };
+        if (box.right - box.left < CROP_MIN_SIDE || box.bottom - box.top < CROP_MIN_SIDE) {
+          complain(strings.cropTooSmall, box.left, box.top);
+          return;
+        }
+        try {
+          const target = pdfPageForBox(box);
+          if (!target) {
+            complain(strings.cropNoPage, box.left, box.top);
+            return;
+          }
+          const start = pageFraction(target.box, drag.startX, drag.startY);
+          const end = pageFraction(target.box, drag.endX, drag.endY);
+          const shot = cropImage(target.page, target.box, drag.startX, drag.startY, drag.endX, drag.endY);
+          const source = quoteSourceOf(target.page);
+          if (!shot) {
+            complain(strings.cropFailed, box.left, box.top);
+            return;
+          }
+          const pageNumber = pageNumberOf(target.page);
+          setDraft('');
+          setSelection({
+            text: cropLabel(source, pageNumber, start, end),
+            rect: box,
+            source,
+            crop: {
+              dataUrl: shot.dataUrl,
+              page: pageNumber,
+              start,
+              end,
+              width: shot.width,
+              height: shot.height,
+            },
+          });
+          setComposing(true);
+        } catch (error) {
+          window.console && window.console.error && window.console.error('[sidebar-quote] crop failed', error);
+          complain(strings.cropFailed, box.left, box.top);
+        }
+      };
+
       // Clicking anywhere outside the card dismisses it.
       React.useEffect(() => {
         if (!composing) return;
@@ -542,7 +861,15 @@ window.__ModuleLoader__.load({
         const truncated = selection.text.length > MAX_QUOTE_CHARS;
         const quote = truncated ? selection.text.slice(0, MAX_QUOTE_CHARS) : selection.text;
         const question = draft.trim();
-        const handled = emitAsk({ quote, question });
+        // A framed picture travels as pixels plus its coordinates: the bridge
+        // saves the pixels first, then stores the passage with the saved path.
+        const handled = emitAsk({
+          quote,
+          question,
+          // The framed pixels already sit in `selection.crop`; the file name is
+          // attached because that is what the toast and the agent both see.
+          crop: selection.crop ? { ...selection.crop, source: selection.source } : null,
+        });
         setSelection(null);
         setComposing(false);
         setDraft('');
@@ -618,6 +945,99 @@ window.__ModuleLoader__.load({
           : h('div', { style: { position: 'fixed', left: `${geometry.left}px`, top: `${geometry.top}px`, zIndex: 2147483600 } }, card));
       }
 
+      // The framing handle only exists while a PDF page is on screen: pictures in a
+      // Word or PPT document arrive as pixels, so a rectangle is the only way to
+      // point at one.
+      if (previewBox && !composing && !cropping) {
+        const pill = h('button', {
+          key: 'crop',
+          type: 'button',
+          className: 'dsh-sidebar-quote-crop-pill',
+          title: strings.cropHint,
+          style: {
+            position: 'fixed',
+            left: `${Math.max(8, previewBox.right - 150)}px`,
+            top: `${previewBox.top + 8}px`,
+            zIndex: 2147483000,
+            padding: '4px 10px',
+            borderRadius: '999px',
+            border: `1px solid ${BORDER}`,
+            background: SURFACE,
+            color: LABEL,
+            fontSize: '12px',
+            lineHeight: 1.4,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            boxShadow: '0 6px 18px rgba(0, 0, 0, 0.22)',
+          },
+          onClick: (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            startCrop();
+          },
+        }, strings.cropPill);
+        overlays.push(createPortal ? createPortal(pill, document.body) : pill);
+      }
+
+      if (cropping) {
+        const originLeft = previewBox ? previewBox.left : 0;
+        const originTop = previewBox ? previewBox.top : 0;
+        const shade = h('div', {
+          key: 'crop-shade',
+          className: 'dsh-sidebar-quote-crop-shade',
+          style: {
+            position: 'fixed',
+            left: `${originLeft}px`,
+            top: `${originTop}px`,
+            width: `${previewBox ? previewBox.right - originLeft : 0}px`,
+            height: `${previewBox ? previewBox.bottom - originTop : 0}px`,
+            zIndex: 2147483500,
+            cursor: 'crosshair',
+            background: 'rgba(0, 0, 0, 0.05)',
+          },
+          onMouseDown: cropPointerDown,
+          onMouseMove: cropPointerMove,
+          onMouseUp: () => finishCrop(),
+          onContextMenu: (event) => {
+            event.preventDefault();
+            cancelCrop();
+          },
+        }, [
+          marquee ? h('div', {
+            key: 'marquee',
+            style: {
+              position: 'absolute',
+              left: `${marquee.left - originLeft}px`,
+              top: `${marquee.top - originTop}px`,
+              width: `${marquee.width}px`,
+              height: `${marquee.height}px`,
+              border: `1.5px solid ${BRAND}`,
+              background: 'rgba(64, 128, 255, 0.14)',
+              boxSizing: 'border-box',
+              pointerEvents: 'none',
+            },
+          }) : null,
+          h('div', {
+            key: 'hint',
+            style: {
+              position: 'absolute',
+              left: '50%',
+              bottom: '12px',
+              transform: 'translateX(-50%)',
+              padding: '4px 10px',
+              borderRadius: '999px',
+              border: `1px solid ${BORDER}`,
+              background: SURFACE,
+              color: LABEL_2,
+              fontSize: '12px',
+              whiteSpace: 'nowrap',
+              pointerEvents: 'none',
+            },
+          }, strings.cropHint),
+        ]);
+        overlays.push(createPortal ? createPortal(shade, document.body) : shade);
+      }
+
       if (status) {
         const geometry = cardGeometry(status.rect);
         const toast = h('div', {
@@ -653,10 +1073,51 @@ window.__ModuleLoader__.load({
     // `inputActions`, which no frame-wide slot exposes.
     function QuoteBridge(props) {
       const actions = props.inputActions;
+      const commands = props.commands;
+      const strings = props.strings || {};
+      const sessionId = props.sessionId;
       React.useEffect(() => {
         if (!actions) return undefined;
-        const listener = (payload) => {
-          const quote = String((payload && payload.quote) || '').trim();
+
+        // A framed picture arrives as pixels. The host half writes them to disk
+        // first and only then does the passage go into the composer, so what the
+        // agent reads already names a file that exists.
+        const saveCrop = (crop) => {
+          if (!crop || !commands || typeof commands.execute !== 'function' || !sessionId) {
+            return Promise.resolve('');
+          }
+          let line = '';
+          try {
+            // The crop payload is base64 and numbers only, so it is already a
+            // single line: no URI escaping is needed, and none of it can carry
+            // the lone surrogates that make encodeURIComponent throw.
+            line = `/save-quote-crop ${JSON.stringify({
+              dataUrl: crop.dataUrl,
+              page: crop.page,
+              source: crop.source || '',
+              area: crop.start && crop.end ? { start: crop.start, end: crop.end } : null,
+            })}`;
+          } catch (error) {
+            console.error('[sidebar-quote] crop payload was not encodable', error);
+            return Promise.resolve('');
+          }
+          return Promise.resolve(commands.execute(sessionId, line, []))
+            .then((result) => {
+              const value = result && result.ok ? result.value : null;
+              const commandResult = value && value.commandResult ? value.commandResult : null;
+              if (!commandResult || commandResult.kind !== 'success') return '';
+              const parsed = JSON.parse(commandResult.text);
+              return parsed && parsed.path ? String(parsed.path) : '';
+            })
+            .catch((error) => {
+              console.error('[sidebar-quote] crop was not saved', error);
+              return '';
+            });
+        };
+
+        const store = (payload, cropNote) => {
+          const baseQuote = String((payload && payload.quote) || '').trim();
+          const quote = cropNote ? `${baseQuote} ${cropNote}`.trim() : baseQuote;
           const question = String((payload && payload.question) || '').trim();
           if (!quote) return false;
           try {
@@ -687,7 +1148,12 @@ window.__ModuleLoader__.load({
             // keystroke can never make it differ from the source. Deletion is
             // still possible, but only as one deliberate whole-block action.
             // The question stays ordinary editable text.
-            if (draftHasContent()) insertPlain('\n\n');
+            // Each quote and its annotation read as one group: the chip is an
+            // inline node, so the annotation goes straight after it on the same
+            // line, and only the next group starts on a new line. The submit
+            // serializer puts the blockquote on its own paragraph anyway, so the
+            // message the model receives keeps quote and annotation apart.
+            if (draftHasContent()) insertPlain('\n');
 
             let inserted = false;
             if (typeof actions.insertQuote === 'function') {
@@ -708,7 +1174,7 @@ window.__ModuleLoader__.load({
                 for (let attempt = 0; attempt < 3 && !added; attempt += 1) {
                   const span = capture();
                   if (!span || typeof actions.insertText !== 'function') break;
-                  added = actions.insertText(`\n${question}`, span) !== false;
+                  added = actions.insertText(` ${question}`, span) !== false;
                 }
                 if (!added) console.error('[sidebar-quote] question text was not inserted');
               }
@@ -728,9 +1194,19 @@ window.__ModuleLoader__.load({
             return false;
           }
         };
+
+        const listener = (payload) => {
+          const crop = payload && payload.crop;
+          if (!crop) return store(payload, '');
+          saveCrop(crop).then((path) => {
+            store(payload, path ? `· 截图：${path}` : (strings.cropUnavailable || ''));
+          });
+          return true;
+        };
+
         askListeners.add(listener);
         return () => { askListeners.delete(listener); };
-      }, [actions]);
+      }, [actions, commands, sessionId]);
       return null;
     }
 
@@ -805,6 +1281,49 @@ window.__ModuleLoader__.load({
       return snapshot;
     }
 
+    // ---- Drop a file onto the right sidebar to open it there ---------------
+    // The composer already accepts drops (they become `@path` chips), but the
+    // document pane renders no drop target of its own: dropping on it does
+    // nothing. The Desktop shell exposes `__DSH_HOST_PATHS__` so a dropped File
+    // can be turned back into an absolute path, and the sidebar then opens that
+    // path exactly as a link click does.
+    const SIDEBAR_DROP_ZONE_SELECTOR = '[data-slot^="rightbar"], [data-textpreview-content]';
+    const FILE_ADDRESS_PREFIX = 'dsh-resource://file/';
+
+    function encodeAddressSegment(segment) {
+      return encodeURIComponent(segment).replace(/%3A/gi, ':');
+    }
+
+    // Mirrors `fileAddressFor` from @deepseek-ai/dsh-util-workspace-path: an
+    // absolute path outside the workspace root still rides a session address.
+    function sessionFileAddress(sessionId, target) {
+      const normalized = String(target).replace(/\\/g, '/').replace(/^(?:\.\/)+/, '');
+      const encoded = normalized.split('/').map(encodeAddressSegment).join('/');
+      return `${FILE_ADDRESS_PREFIX}session/${encodeAddressSegment(sessionId)}/${encoded}`;
+    }
+
+    function hostPathFor(file) {
+      const bridge = typeof window === 'undefined' ? null : window.__DSH_HOST_PATHS__;
+      if (!bridge || typeof bridge.pathFor !== 'function') return '';
+      try {
+        const resolved = bridge.pathFor(file);
+        return typeof resolved === 'string' ? resolved : '';
+      } catch (error) {
+        return '';
+      }
+    }
+
+    function sidebarZoneOf(node) {
+      const element = elementOf(node);
+      return element && element.closest ? element.closest(SIDEBAR_DROP_ZONE_SELECTOR) : null;
+    }
+
+    function dropFilesOf(event) {
+      const transfer = event ? event.dataTransfer : null;
+      if (!transfer || !transfer.files) return [];
+      return Array.prototype.slice.call(transfer.files);
+    }
+
     function PromptFish(props) {
       const strings = props.strings;
       const inputActions = props.inputActions;
@@ -825,6 +1344,7 @@ window.__ModuleLoader__.load({
       const [pending, setPending] = React.useState(null);
       const [answers, setAnswers] = React.useState({});
       const [panelPos, setPanelPos] = React.useState(null);
+      const [dropZone, setDropZone] = React.useState(null);
       const buttonRef = React.useRef(null);
       const dragRef = React.useRef(null);
 
@@ -898,6 +1418,66 @@ window.__ModuleLoader__.load({
         }
         setNotice(message);
       };
+
+      // Listening on the window, because the document pane renders no drop
+      // target of its own: the region is recognised from the drop target's
+      // ancestry instead. Only drops that carry real files are intercepted, so
+      // dragging text or a composer token keeps its shipped behaviour.
+      const openInSidebar = typeof props.openInSidebar === 'function' ? props.openInSidebar : null;
+
+      React.useEffect(() => {
+        if (!sessionId) return undefined;
+        if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return undefined;
+        const onDragOver = (event) => {
+          const zone = sidebarZoneOf(event.target);
+          if (zone === null) return;
+          if (dropFilesOf(event).length === 0) {
+            // Something that is not a file is being dragged over the sidebar, so
+            // any overlay left from a previous file drag is now stale.
+            setDropZone(null);
+            return;
+          }
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+          const rect = zone.getBoundingClientRect();
+          setDropZone({
+            left: `${rect.left}px`,
+            top: `${rect.top}px`,
+            width: `${rect.width}px`,
+            height: `${rect.height}px`,
+          });
+        };
+        const onDragLeave = (event) => {
+          if (sidebarZoneOf(event.target) !== null) setDropZone(null);
+        };
+        const onDrop = (event) => {
+          if (sidebarZoneOf(event.target) === null) return;
+          const files = dropFilesOf(event);
+          if (files.length === 0) return;
+          event.preventDefault();
+          setDropZone(null);
+          if (!openInSidebar) {
+            showNotice(strings.dropUnavailable);
+            return;
+          }
+          const path = hostPathFor(files[0]);
+          if (!path) {
+            showNotice(strings.dropNoPath);
+            return;
+          }
+          if (!openInSidebar(sessionFileAddress(sessionId, path))) {
+            showNotice(strings.dropUnavailable);
+          }
+        };
+        document.addEventListener('dragover', onDragOver, true);
+        document.addEventListener('dragleave', onDragLeave, true);
+        document.addEventListener('drop', onDrop, true);
+        return () => {
+          document.removeEventListener('dragover', onDragOver, true);
+          document.removeEventListener('dragleave', onDragLeave, true);
+          document.removeEventListener('drop', onDrop, true);
+        };
+      }, [sessionId, openInSidebar, strings]);
 
       // Split the draft around its atomic quotes: only the user's own text is
       // sent to the optimizer, and the quoted passages are rebuilt locally as
@@ -1395,6 +1975,32 @@ window.__ModuleLoader__.load({
         ]), document.body)
         : null;
 
+      const dropOverlay = dropZone && createPortal
+        ? createPortal(h('div', {
+          key: 'drop-zone',
+          className: 'dsh-sidebar-quote-drop-zone',
+          style: {
+            position: 'fixed',
+            left: dropZone.left,
+            top: dropZone.top,
+            width: dropZone.width,
+            height: dropZone.height,
+            zIndex: 2147483600,
+            pointerEvents: 'none',
+            border: `2px dashed ${BRAND}`,
+            borderRadius: '10px',
+            background: 'rgba(64, 128, 255, 0.08)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: LABEL,
+            fontSize: '13px',
+            fontWeight: 600,
+            fontFamily: 'inherit',
+          },
+        }, strings.dropHint), document.body)
+        : null;
+
       const node = h(React.Fragment, null, [
         h('style', { key: 'style' }, '@keyframes dsh-fish-sway{0%,100%{transform:translateX(-2px) rotate(-6deg)}50%{transform:translateX(2px) rotate(6deg)}}.dsh-fish-busy .dsh-fish-shape{animation:dsh-fish-sway 1.9s ease-in-out infinite;transform-origin:50% 62%}'),
         h('div', {
@@ -1425,6 +2031,7 @@ window.__ModuleLoader__.load({
           : null) : null,
         questionsPanel,
         previewPanel,
+        dropOverlay,
       ]);
 
       return node;
@@ -1461,6 +2068,15 @@ window.__ModuleLoader__.load({
         fishAccept: '写入输入框',
         fishNoGap: '这份草稿已经够清楚了，模型认为没有值得补的缺口（不是失败，是没改动）',
         fishDragHint: '拖动标题栏可以移动这个窗口',
+        cropPill: '框选图片',
+        cropHint: '在页面上拖出一个方框，圈住要改的那张图片',
+        cropFailed: '这块区域取不到图像（页面可能还没渲染完），请再框一次',
+        cropUnavailable: '（截图没能保存，请按上面的页码与区域定位）',
+        cropTooSmall: '框太小了，请把要改的那张图片整个圈进去再松手',
+        cropNoPage: '没框到页面上（框落在页面外或页间空隙），请把框画在页面里',
+        dropHint: '松开即可在侧栏打开',
+        dropNoPath: '这次拖拽没有带真实路径（只有桌面应用能给），请用侧栏的打开按钮',
+        dropUnavailable: '侧栏打开功能不可用，暂时打不开这个文件',
       };
       const locale = ctx.locale || ctx.get('locale');
       if (locale && typeof locale.bind === 'function') {
@@ -1495,6 +2111,16 @@ window.__ModuleLoader__.load({
               fishConcrete: strings.fishConcrete,
               fishAccept: strings.fishAccept,
               fishNoGap: strings.fishNoGap,
+              fishDragHint: strings.fishDragHint,
+              cropPill: strings.cropPill,
+              cropHint: strings.cropHint,
+              cropFailed: strings.cropFailed,
+              cropUnavailable: strings.cropUnavailable,
+              cropTooSmall: strings.cropTooSmall,
+              cropNoPage: strings.cropNoPage,
+              dropHint: strings.dropHint,
+              dropNoPath: strings.dropNoPath,
+              dropUnavailable: strings.dropUnavailable,
             });
             locale.register('sidebar-quote', 'en', {
               quote: 'Quote & ask',
@@ -1525,7 +2151,16 @@ window.__ModuleLoader__.load({
               fishConcrete: 'More concrete',
               fishAccept: 'Write to composer',
               fishNoGap: 'This draft is already clear enough — the model found no gap worth closing (no change, not a failure)',
-        fishDragHint: 'Drag the title bar to move this window',
+              fishDragHint: 'Drag the title bar to move this window',
+              cropPill: 'Frame a picture',
+              cropHint: 'Drag a box over the page to frame the picture you want changed',
+              cropFailed: 'This area could not be captured (the page may still be rendering); try framing it again',
+              cropUnavailable: '(the screenshot was not saved — use the page and area above to find it)',
+              cropTooSmall: 'That box is too small — frame the whole picture and then release',
+              cropNoPage: 'The box missed the page (it fell outside it or between pages); draw it on the page itself',
+              dropHint: 'Release to open it in the sidebar',
+              dropNoPath: 'This drop carried no real path (only the desktop app provides one); use the sidebar open button instead',
+              dropUnavailable: 'Opening in the sidebar is unavailable, so this file cannot be opened here',
             });
           }
           const translate = locale.bind('sidebar-quote');
@@ -1542,7 +2177,23 @@ window.__ModuleLoader__.load({
       // service exists before apply runs; it is absent only for a non-owner
       // Peer, where the fish simply stays disabled.
       const commands = ctx.remote && ctx.remote.commands ? ctx.remote.commands : undefined;
-      const Fish = (props) => h(PromptFish, { ...props, commands, strings });
+
+      // Opening a path in the right sidebar is the shipped path's own call, so
+      // a dropped file behaves exactly like a click on a link. When the service
+      // is unreachable the fish says so instead of failing silently.
+      const openInSidebar = (url) => {
+        try {
+          const sidebarRight = typeof ctx.get === 'function' ? ctx.get('sidebarRight') : undefined;
+          if (!sidebarRight || typeof sidebarRight.openResource !== 'function') return false;
+          sidebarRight.openResource(url);
+          return true;
+        } catch (error) {
+          console.error('[sidebar-quote] sidebar open failed', error);
+          return false;
+        }
+      };
+
+      const Fish = (props) => h(PromptFish, { ...props, commands, strings, openInSidebar });
 
       const Selection = () => h(QuoteSelection, { strings });
 
@@ -1567,7 +2218,7 @@ window.__ModuleLoader__.load({
         id: 'sidebar-quote.bridge',
         order: 90,
         label: strings.quote,
-      }, QuoteBridge));
+      }, (props) => h(QuoteBridge, { ...props, commands, strings })));
 
       safeInject('conversation.input.right', () => ctx.slots.register({
         name: 'conversation.input.right',

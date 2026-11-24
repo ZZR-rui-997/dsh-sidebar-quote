@@ -14,6 +14,18 @@ reviewed by you before it touches anything.
   tell what you were asking about. The source filename is shown on the card
   when the preview provides one. Quotes longer than 8000 characters are
   truncated and the card tells you so.
+- **Frame a picture** — a Word or PowerPoint illustration is just pixels in the
+  converted PDF, so there is nothing to select. Press the framing button at the
+  top-right of the preview, drag a box over the picture you want changed, and the
+  card opens with that crop attached: the composer receives a read-only quote
+  naming the file, page and area, plus the saved screenshot path, so the agent
+  can open the real crop (or pull the original image out of the source file).
+  A box that is too small, or that missed the page, says so instead of doing
+  nothing.
+- **Drop a file onto the sidebar to open it** — dragging a file from Explorer
+  onto the right sidebar opens it in the document pane, the same way a link
+  click there does. Only the desktop shell provides real filesystem paths; in
+  the browser the plugin says so instead of guessing.
 - **Prompt optimization (the whale)** — press the whale to send the draft to a
   two-stage rewrite:
   1. *Analyze* finds real execution gaps (missing task boundary, background,

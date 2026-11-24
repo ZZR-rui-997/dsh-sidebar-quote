@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Document quote",
-    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. A little whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review before anything touches the composer.",
+    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. A little whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review before anything touches the composer.",
     "detail": "docs/DETAIL.md"
   },
   "quote": "Quote & ask",
@@ -32,5 +32,14 @@
   "fishConcrete": "More concrete",
   "fishAccept": "Write to composer",
   "fishNoGap": "This draft is already clear enough — the model found no gap worth closing (no change, not a failure)",
-  "fishDragHint": "Drag the title bar to move this window"
+  "fishDragHint": "Drag the title bar to move this window",
+  "cropPill": "Frame a picture",
+  "cropHint": "Drag a box over the page to frame the picture you want changed",
+  "cropFailed": "This area could not be captured (the page may still be rendering); try framing it again",
+  "cropUnavailable": "(the screenshot was not saved — use the page and area above to find it)",
+  "cropTooSmall": "That box is too small — frame the whole picture and then release",
+  "cropNoPage": "The box missed the page (it fell outside it or between pages); draw it on the page itself",
+  "dropHint": "Release to open it in the sidebar",
+  "dropNoPath": "This drop carried no real path (only the desktop app provides one); use the sidebar open button instead",
+  "dropUnavailable": "Opening in the sidebar is unavailable, so this file cannot be opened here"
 }

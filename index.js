@@ -15,6 +15,10 @@
  * template and no length multiplier.
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 // ---------------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------------
@@ -384,28 +388,10 @@ function repairLines(verdict) {
 // Model calls
 // ---------------------------------------------------------------------------
 
-async function complete(ctx, invocation, system, content, options) {
-  const opts = options || {};
-  const llm = ctx.get('llm');
-  const defaultModel = ctx.get('agentDefaultModel');
-  const selection = defaultModel && typeof defaultModel.currentSelection === 'function'
-    ? defaultModel.currentSelection()
-    : undefined;
-  const provider = (opts.override && opts.override.provider) || (selection && selection.provider);
-  const model = (opts.override && opts.override.model) || (selection && selection.model);
-  if (!provider || !model) throw new Error('没有找到可用的模型');
-
+/** Drain one stream request into its concatenated text. */
+async function drainStream(llm, request) {
   let output = '';
-  const stream = llm.stream({
-    provider,
-    model,
-    system,
-    messages: [{ role: 'user', content: [{ type: 'text', text: content }] }],
-    temperature: opts.temperature == null ? 0.3 : opts.temperature,
-    maxTokens: opts.maxTokens || 4096,
-    signal: invocation && invocation.signal,
-    sessionId: invocation && invocation.agent && invocation.agent.id,
-  });
+  const stream = llm.stream(request);
   for await (const chunk of stream) {
     if (!chunk) continue;
     if (chunk.type === 'text-delta') {
@@ -420,6 +406,52 @@ async function complete(ctx, invocation, system, content, options) {
     }
   }
   return output;
+}
+
+/**
+ * Gateways that only speak the older OpenAI shape reject the `developer` role a
+ * reasoning model uses for its system prompt. DSH's own fix is the `compat`
+ * block on the provider route; this retry keeps the button working on a route
+ * nobody has corrected yet, by carrying the prompt as a system message.
+ */
+function rejectsDeveloperRole(error) {
+  const message = error && error.message ? String(error.message) : '';
+  return /developer is not one of|supportsDeveloperRole/iu.test(message);
+}
+
+async function complete(ctx, invocation, system, content, options) {
+  const opts = options || {};
+  const llm = ctx.get('llm');
+  const defaultModel = ctx.get('agentDefaultModel');
+  const selection = defaultModel && typeof defaultModel.currentSelection === 'function'
+    ? defaultModel.currentSelection()
+    : undefined;
+  const provider = (opts.override && opts.override.provider) || (selection && selection.provider);
+  const model = (opts.override && opts.override.model) || (selection && selection.model);
+  if (!provider || !model) throw new Error('没有找到可用的模型');
+
+  const request = {
+    provider,
+    model,
+    temperature: opts.temperature == null ? 0.3 : opts.temperature,
+    maxTokens: opts.maxTokens || 4096,
+    signal: invocation && invocation.signal,
+    sessionId: invocation && invocation.agent && invocation.agent.id,
+  };
+  const userMessage = { role: 'user', content: [{ type: 'text', text: content }] };
+
+  try {
+    return await drainStream(llm, { ...request, system, messages: [userMessage] });
+  } catch (error) {
+    if (!system || !rejectsDeveloperRole(error)) throw error;
+    const systemMessage = { role: 'system', content: [{ type: 'text', text: system }] };
+    try {
+      return await drainStream(llm, { ...request, messages: [systemMessage, userMessage] });
+    } catch (fallbackError) {
+      // Report the original rejection: it names the real cause.
+      throw error;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -676,6 +708,91 @@ async function optimize(ctx, invocation) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Framed images
+// ---------------------------------------------------------------------------
+// The browser half can read pixels out of a PDF page canvas but cannot write a
+// file, so the crop is handed over as a data URL and lands in the temp dir. The
+// path it returns is what the passage quotes: the agent opens exactly the
+// rectangle the user framed instead of guessing where a figure sits.
+
+const CROP_DIR = path.join(os.tmpdir(), 'dsh-sidebar-quote-crops');
+const CROP_MAX_BYTES = 6 * 1024 * 1024;
+
+function parseCropPayload(rawInput) {
+  const raw = String(rawInput == null ? '' : rawInput).trim();
+  if (!raw) return null;
+  const candidates = [raw];
+  if (raw.indexOf('%') >= 0) {
+    try {
+      candidates.push(decodeURIComponent(raw));
+    } catch (error) {
+      // A bare percent sign is not an encoding; keep the raw candidate.
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && typeof parsed.dataUrl === 'string') return parsed;
+    } catch (error) {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+function cropSlug(source, area) {
+  const base = String(source || '')
+    .split(/[\\/]/u)
+    .pop()
+    .replace(/\.[a-z0-9]+$/iu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 32);
+  const percent = (value) => (Number.isFinite(value) ? Math.round(value * 100) : 0);
+  const start = area && area.start ? area.start : null;
+  const end = area && area.end ? area.end : null;
+  const box = start && end
+    ? `-x${percent(Math.min(start.x, end.x))}-${percent(Math.min(start.y, end.y))}-${percent(Math.max(start.x, end.x))}-${percent(Math.max(start.y, end.y))}`
+    : '';
+  return `${base || 'picture'}${box}`;
+}
+
+function saveCrop(payload) {
+  if (!payload) return { kind: 'error', text: '截图数据无法识别' };
+  const dataUrl = String(payload.dataUrl || '');
+  const marker = 'base64,';
+  const at = dataUrl.indexOf(marker);
+  if (at < 0) return { kind: 'error', text: '截图数据无法识别' };
+  const base64 = dataUrl.slice(at + marker.length);
+  if (!base64) return { kind: 'error', text: '截图是空的' };
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length === 0) return { kind: 'error', text: '截图是空的' };
+  if (bytes.length > CROP_MAX_BYTES) return { kind: 'error', text: '截图太大，请框小一点' };
+
+  const page = Number(payload.page) || 0;
+  const slug = cropSlug(payload.source, payload.area);
+  const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
+  const name = `${stamp}-p${page}-${slug}.jpg`;
+  try {
+    fs.mkdirSync(CROP_DIR, { recursive: true });
+    const target = path.join(CROP_DIR, name);
+    fs.writeFileSync(target, bytes);
+    return {
+      kind: 'success',
+      text: JSON.stringify({ path: target, bytes: bytes.length, page }),
+    };
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    return { kind: 'error', text: `截图没能写入磁盘：${message}` };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
 // Wait for the command registry before this row activates: without the
 // declaration `apply` can run before the service exists at boot, which silently
 // skipped the registration and made the button report "优化命令未注册".
@@ -686,12 +803,20 @@ export function apply(ctx) {
     const commands = ctx.commands || ctx.get('commands');
     if (!commands) return;
 
-    const registration = () => commands.register({
-      name: 'optimize-prompt',
-      description: '把当前输入框草稿扩写成一个可执行的提示词（由输入框旁的小鲸鱼按钮调用）',
-      recordInput: false,
-      handler: (invocation) => optimize(ctx, invocation),
-    });
+    const registration = () => {
+      commands.register({
+        name: 'optimize-prompt',
+        description: '把当前输入框草稿扩写成一个可执行的提示词（由输入框旁的小鲸鱼按钮调用）',
+        recordInput: false,
+        handler: (invocation) => optimize(ctx, invocation),
+      });
+      commands.register({
+        name: 'save-quote-crop',
+        description: '把用户框选的图片区域写入临时文件，返回路径供引用使用',
+        recordInput: false,
+        handler: (invocation) => saveCrop(parseCropPayload(invocation && invocation.rawInput)),
+      });
+    };
 
     if (typeof ctx.effect === 'function') ctx.effect(registration);
     else registration();
@@ -703,6 +828,11 @@ export function apply(ctx) {
 
 export const __test__ = {
   optimize,
+  complete,
+  rejectsDeveloperRole,
+  saveCrop,
+  parseCropPayload,
+  cropSlug,
   parsePayload,
   parseParts,
   reconcileParts,
