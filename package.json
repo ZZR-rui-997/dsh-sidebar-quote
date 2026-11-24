@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidebar-quote",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "Quote sidebar document selections, frame pictures to ask for changes, and optimize prompts — all from the composer.",
   "license": "MIT",
@@ -40,7 +40,9 @@
     "ASSET_LICENSE.md",
     "LICENSE",
     "docs",
-    "preview.svg"
+    "preview.svg",
+    "screenshots.json",
+    "assets"
   ],
   "dsh": {
     "bundle": {
