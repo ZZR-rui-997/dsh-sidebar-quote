@@ -40,6 +40,10 @@ reviewed by you before it touches anything.
      listing what changed and which gap each change closes. Nothing is written
      to the composer until you press "Write to composer". One click on ↩
      restores your original draft.
+- **While it works** — a small panel shows the elapsed seconds and a Cancel
+  button. Cancelling only stops the wait: the answer is thrown away, never
+  written behind your back. `Alt+O` starts an optimization from the keyboard.
+  The preview panel can also copy the rewrite to the clipboard.
 - Quotes stay read-only through optimization: the rewrite replaces your words,
   never the quoted originals.
 
@@ -58,6 +62,10 @@ quotes in it. So:
 ## Requirements
 
 - DSH `>=0.2.2-rc.1`, Node `>=22`
+- Framed screenshots are written to `DSH_HOME/sidebar-quote/crops` (default
+  `~/.dsh/sidebar-quote/crops`) and files older than a week are pruned; a temp
+  directory would have been deleted out from under a draft that still quotes
+  the path.
 - Uses the agent's currently selected model; two model calls per optimization
   (analyze + generate), each capped (2048 / 8192 output tokens). No data leaves
   the model provider you already use.

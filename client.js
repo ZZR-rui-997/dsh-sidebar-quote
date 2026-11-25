@@ -57,10 +57,17 @@ window.__ModuleLoader__.load({
       return handled;
     }
 
+    // The desktop shell marks top-level UI bands as window-drag regions
+    // (`-webkit-app-region: drag`). Everything this plugin portals to <body>
+    // would inherit that, so a click on a floating button would drag the window
+    // instead of pressing it. Same defence dsh-better-sidebar ships.
+    const NO_DRAG = { WebkitAppRegion: 'no-drag' };
+
     const BUBBLE_STYLE = [
       'position:absolute',
       'z-index:2147483000',
       'pointer-events:auto',
+      '-webkit-app-region:no-drag',
       'display:none',
       'align-items:center',
       'gap:6px',
@@ -402,6 +409,7 @@ window.__ModuleLoader__.load({
       position: 'fixed',
       zIndex: 2147483600,
       pointerEvents: 'auto',
+      ...NO_DRAG,
       display: 'flex',
       flexDirection: 'column',
       gap: '8px',
@@ -459,6 +467,7 @@ window.__ModuleLoader__.load({
       position: 'fixed',
       zIndex: 2147483600,
       pointerEvents: 'auto',
+      ...NO_DRAG,
       display: 'flex',
       flexDirection: 'column',
       gap: '8px',
@@ -968,6 +977,7 @@ window.__ModuleLoader__.load({
             lineHeight: 1.4,
             fontFamily: 'inherit',
             cursor: 'pointer',
+            ...NO_DRAG,
             boxShadow: '0 6px 18px rgba(0, 0, 0, 0.22)',
           },
           onClick: (event) => {
@@ -993,6 +1003,7 @@ window.__ModuleLoader__.load({
             height: `${previewBox ? previewBox.bottom - originTop : 0}px`,
             zIndex: 2147483500,
             cursor: 'crosshair',
+            ...NO_DRAG,
             background: 'rgba(0, 0, 0, 0.05)',
           },
           onMouseDown: cropPointerDown,
@@ -1048,6 +1059,7 @@ window.__ModuleLoader__.load({
             top: `${geometry.top}px`,
             zIndex: 2147483601,
             pointerEvents: 'none',
+            ...NO_DRAG,
             padding: '6px 12px',
             borderRadius: '8px',
             border: `1px solid ${BORDER}`,
@@ -1335,6 +1347,10 @@ window.__ModuleLoader__.load({
       const inputState = useInputHook((state) => state);
 
       const [busy, setBusy] = React.useState(false);
+      const [busySince, setBusySince] = React.useState(0);
+      const [elapsed, setElapsed] = React.useState(0);
+      const waitRef = React.useRef({ id: 0, cancelled: false });
+      const runRef = React.useRef(null);
       const [notice, setNotice] = React.useState(null);
       const [undo, setUndo] = React.useState(null);
       const [anchor, setAnchor] = React.useState({ left: 0, top: 0 });
@@ -1567,7 +1583,11 @@ window.__ModuleLoader__.load({
         if (opts.skipQuestions) payload.clarificationMode = 'proceed';
         if (opts.answers && opts.answers.length > 0) payload.clarificationMode = 'proceed';
 
+        const wait = { id: waitRef.current.id + 1, cancelled: false };
+        waitRef.current = wait;
         setBusy(true);
+        setBusySince(Date.now());
+        setElapsed(0);
         try {
           // JSON.stringify escapes every newline into the two characters `\n`,
           // so the payload is already a single line and needs no extra
@@ -1575,6 +1595,10 @@ window.__ModuleLoader__.load({
           // surrogate, which a bad paste can leave in the draft.)
           const line = `/optimize-prompt ${JSON.stringify(payload)}`;
           const result = await commands.execute(sessionId, line, []);
+          // The user may have given up while the model was still thinking:
+          // drop the answer instead of surprising them with a panel they no
+          // longer expect.
+          if (waitRef.current !== wait || wait.cancelled) return;
           if (!result || !result.ok) {
             throw new Error((result && result.error && result.error.message) || '调用优化命令失败');
           }
@@ -1625,11 +1649,82 @@ window.__ModuleLoader__.load({
             answers: opts.answers || [],
           });
         } catch (error) {
-          showNotice((error && error.message) || strings.fishFailed);
+          showNotice(translateFailure(error && error.message));
         } finally {
           setBusy(false);
         }
       };
+
+      // The command channel has no cancel token, so "cancel" can only mean:
+      // stop waiting, ignore whatever comes back, and free the button now.
+      const cancelWait = () => {
+        waitRef.current = { ...waitRef.current, cancelled: true };
+        setBusy(false);
+        showNotice(strings.fishCancelled);
+      };
+
+      // Raw provider errors read like `400: {"code":...}`; say what happened
+      // and what to do instead of dumping the envelope on the user.
+      const translateFailure = (message) => {
+        const raw = String(message || '');
+        if (/developer is not one of|supportsDeveloperRole/iu.test(raw)) return strings.errSystemRole;
+        if (/\b(?:400|401|403|404|429|5\d\d)\b/u.test(raw)) return strings.errGateway + raw;
+        if (/aborted|已取消/u.test(raw)) return strings.errAborted;
+        if (/timeout|超时|ETIMEDOUT|ECONNRESET|fetch failed/iu.test(raw)) return strings.errNetwork;
+        return raw || strings.fishFailed;
+      };
+
+      const copyPending = () => {
+        if (!pending || pending.kind !== 'preview') return;
+        const payload = pending.parts.filter((part) => part.trim()).join('\n\n');
+        const fallback = () => {
+          try {
+            const area = document.createElement('textarea');
+            area.value = payload;
+            area.setAttribute('readonly', '');
+            area.style.position = 'fixed';
+            area.style.opacity = '0';
+            document.body.appendChild(area);
+            area.select();
+            const ok = typeof document.execCommand === 'function' && document.execCommand('copy');
+            document.body.removeChild(area);
+            showNotice(ok ? strings.fishCopied : strings.fishCopyFailed);
+          } catch (error) {
+            showNotice(strings.fishCopyFailed);
+          }
+        };
+        const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : null;
+        if (clipboard && typeof clipboard.writeText === 'function') {
+          clipboard.writeText(payload).then(() => showNotice(strings.fishCopied)).catch(fallback);
+          return;
+        }
+        fallback();
+      };
+
+      runRef.current = runOptimize;
+
+      React.useEffect(() => {
+        if (!busy) return undefined;
+        const timer = window.setInterval(() => {
+          setElapsed(Math.round((Date.now() - busySince) / 1000));
+        }, 500);
+        return () => window.clearInterval(timer);
+      }, [busy, busySince]);
+
+      React.useEffect(() => {
+        if (typeof document === 'undefined' || !document.addEventListener) return undefined;
+        const onKey = (event) => {
+          if (!event.altKey || event.ctrlKey || event.metaKey) return;
+          if (String(event.key || '').toLowerCase() !== 'o') return;
+          const target = event.target;
+          const tag = target && target.tagName ? String(target.tagName).toLowerCase() : '';
+          if (tag === 'input' || tag === 'textarea') return;
+          event.preventDefault();
+          if (runRef.current) runRef.current();
+        };
+        document.addEventListener('keydown', onKey, true);
+        return () => document.removeEventListener('keydown', onKey, true);
+      }, []);
 
       // Nothing reaches the composer until the preview is accepted: a rewrite
       // the user cannot inspect is a rewrite they cannot refuse.
@@ -1880,6 +1975,31 @@ window.__ModuleLoader__.load({
         },
       });
 
+      // Long rounds spend tens of seconds in the model with nothing on screen.
+      // A counter plus a way out is the difference between "working" and "hung".
+      const workingPanel = busy && !pending && createPortal
+        ? createPortal(h('div', {
+          style: {
+            ...CARD_STYLE,
+            left: `${anchor.left}px`,
+            top: `${anchor.top}px`,
+            maxWidth: '340px',
+            zIndex: 2147483602,
+          },
+        }, [
+          h('div', { key: 'line', style: { display: 'flex', alignItems: 'center', gap: '10px' } }, [
+            h('span', { key: 'text', style: { fontSize: '12.5px', color: LABEL } }, `${strings.fishWorking} · ${elapsed}s`),
+            h('button', {
+              key: 'stop',
+              type: 'button',
+              onClick: cancelWait,
+              style: buttonStyle(false),
+            }, strings.cancel),
+          ]),
+          h('div', { key: 'hint', style: { fontSize: '11px', color: LABEL_2, lineHeight: 1.45 } }, strings.fishWorkingHint),
+        ]), document.body)
+        : null;
+
       const questionsPanel = pending && pending.kind === 'questions'
         ? createPortal(h('div', { style: panelStyle }, [
           panelHeader(strings.fishAskTitle),
@@ -1948,6 +2068,12 @@ window.__ModuleLoader__.load({
           ]),
           panelRow([
             h('button', {
+              key: 'copy',
+              type: 'button',
+              onClick: copyPending,
+              style: buttonStyle(false),
+            }, strings.fishCopy),
+            h('button', {
               key: 'shorter',
               type: 'button',
               onClick: () => refine('shorter'),
@@ -1987,6 +2113,7 @@ window.__ModuleLoader__.load({
             height: dropZone.height,
             zIndex: 2147483600,
             pointerEvents: 'none',
+            ...NO_DRAG,
             border: `2px dashed ${BRAND}`,
             borderRadius: '10px',
             background: 'rgba(64, 128, 255, 0.08)',
@@ -2016,6 +2143,7 @@ window.__ModuleLoader__.load({
               top: `${anchor.top}px`,
               zIndex: 2147483601,
               pointerEvents: 'none',
+              ...NO_DRAG,
               maxWidth: '280px',
               padding: '6px 12px',
               borderRadius: '8px',
@@ -2029,6 +2157,7 @@ window.__ModuleLoader__.load({
             },
           }, notice), document.body)
           : null) : null,
+        workingPanel,
         questionsPanel,
         previewPanel,
         dropOverlay,
@@ -2048,6 +2177,15 @@ window.__ModuleLoader__.load({
         unavailable: '输入框当前不可用，请稍后重试',
         fishTitle: '优化提示词（可选）',
         fishBusy: '正在优化…',
+        fishWorking: '正在优化',
+        fishWorkingHint: '先找缺口再改写，通常十几秒到一分钟；不想等可以点取消，结果会被丢弃',
+        fishCancelled: '已取消等待（模型仍会跑完，结果丢弃）',
+        fishCopy: '复制改写',
+        fishCopied: '改写已复制 ✓',
+        fishCopyFailed: '复制失败，请手动选中文本复制',
+        errSystemRole: '当前模型不接受 system 角色（网关限制），自动重试后仍失败；请换一个模型再试',
+        errGateway: '模型网关返回错误：',
+        errNetwork: '网络或网关中断，请稍后重试',
         fishDone: '已替换为优化后的提示词（引用仍保持只读，点 ↩ 可撤销）',
         fishDonePlain: '已替换为优化后的提示词（引用片段未能保持只读，已按纯文本写入）',
         undoTitle: '撤销优化，恢复我原来写的',
@@ -2092,6 +2230,15 @@ window.__ModuleLoader__.load({
               unavailable: strings.unavailable,
               fishTitle: strings.fishTitle,
               fishBusy: strings.fishBusy,
+              fishWorking: strings.fishWorking,
+              fishWorkingHint: strings.fishWorkingHint,
+              fishCancelled: strings.fishCancelled,
+              fishCopy: strings.fishCopy,
+              fishCopied: strings.fishCopied,
+              fishCopyFailed: strings.fishCopyFailed,
+              errSystemRole: strings.errSystemRole,
+              errGateway: strings.errGateway,
+              errNetwork: strings.errNetwork,
               fishDone: strings.fishDone,
               fishDonePlain: strings.fishDonePlain,
               undoTitle: strings.undoTitle,
@@ -2132,6 +2279,24 @@ window.__ModuleLoader__.load({
               unavailable: 'The composer is unavailable right now',
               fishTitle: 'Optimize prompt (optional)',
               fishBusy: 'Optimizing…',
+              fishWorking: 'Optimizing',
+              fishWorkingHint: 'It looks for the gap first, then rewrites; usually 10-60 s. Cancel stops waiting and throws the answer away',
+              fishCancelled: 'Stopped waiting (the model still finishes in the background, the answer is dropped)',
+              fishCopy: 'Copy rewrite',
+              fishCopied: 'Rewrite copied ✓',
+              fishCopyFailed: 'Copy failed — select the text and copy it by hand',
+              errSystemRole: 'The current model rejects the system role (gateway limit) even after the automatic retry; try another model',
+              errGateway: 'The model gateway returned an error: ',
+              errNetwork: 'Network or gateway interrupted; try again in a moment',
+        fishWorking: 'Optimizing',
+        fishWorkingHint: 'It looks for the gap first, then rewrites; usually 10-60 s. Cancel stops waiting and throws the answer away',
+        fishCancelled: 'Stopped waiting (the model still finishes in the background, the answer is dropped)',
+        fishCopy: 'Copy rewrite',
+        fishCopied: 'Rewrite copied ✓',
+        fishCopyFailed: 'Copy failed — select the text and copy it by hand',
+        errSystemRole: 'The current model rejects the system role (gateway limit) even after the automatic retry; try another model',
+        errGateway: 'The model gateway returned an error: ',
+        errNetwork: 'Network or gateway interrupted; try again in a moment',
               fishDone: 'Draft replaced with the optimized prompt (quotes stay read-only; ↩ reverts)',
               fishDonePlain: 'Draft replaced with the optimized prompt (quoted passages could not stay read-only; inserted as plain text)',
               undoTitle: 'Undo the optimization and restore my draft',

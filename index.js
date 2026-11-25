@@ -716,8 +716,43 @@ async function optimize(ctx, invocation) {
 // path it returns is what the passage quotes: the agent opens exactly the
 // rectangle the user framed instead of guessing where a figure sits.
 
-const CROP_DIR = path.join(os.tmpdir(), 'dsh-sidebar-quote-crops');
+// `DSH_HOME` is where every other DSH-side artefact lives; falling back to
+// `~/.dsh` keeps web and desktop builds pointing at the same folder.
+function dshHome() {
+  const configured = String(process.env.DSH_HOME || '').trim();
+  if (configured) return configured;
+  return path.join(os.homedir(), '.dsh');
+}
+
+const CROP_DIR = path.join(dshHome(), 'sidebar-quote', 'crops');
 const CROP_MAX_BYTES = 6 * 1024 * 1024;
+// A crop is quoted by path, so deleting it while the draft still exists breaks
+// the reference. A week is long past the point where a draft is still in play.
+const CROP_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+
+function pruneCrops(dir, now = Date.now()) {
+  let removed = 0;
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch (error) {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (!/\.jpg$/iu.test(entry)) continue;
+    const file = path.join(dir, entry);
+    try {
+      const stat = fs.statSync(file);
+      if (stat.isFile() && now - stat.mtimeMs > CROP_KEEP_MS) {
+        fs.unlinkSync(file);
+        removed += 1;
+      }
+    } catch (error) {
+      // A locked or already-deleted file is not worth failing the save over.
+    }
+  }
+  return removed;
+}
 
 function parseCropPayload(rawInput) {
   const raw = String(rawInput == null ? '' : rawInput).trim();
@@ -777,6 +812,7 @@ function saveCrop(payload) {
   const name = `${stamp}-p${page}-${slug}.jpg`;
   try {
     fs.mkdirSync(CROP_DIR, { recursive: true });
+    pruneCrops(CROP_DIR);
     const target = path.join(CROP_DIR, name);
     fs.writeFileSync(target, bytes);
     return {
@@ -831,6 +867,8 @@ export const __test__ = {
   complete,
   rejectsDeveloperRole,
   saveCrop,
+  pruneCrops,
+  dshHome,
   parseCropPayload,
   cropSlug,
   parsePayload,

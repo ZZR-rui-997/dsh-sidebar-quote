@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Document quote",
-    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. A little whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review before anything touches the composer.",
+    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. A little whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review before anything touches the composer. While it works you see the elapsed seconds and can cancel (a late answer is thrown away), Alt+O starts it from the keyboard, and the preview panel can copy the rewrite.",
     "detail": "docs/DETAIL.md"
   },
   "quote": "Quote & ask",
@@ -41,5 +41,14 @@
   "cropNoPage": "The box missed the page (it fell outside it or between pages); draw it on the page itself",
   "dropHint": "Release to open it in the sidebar",
   "dropNoPath": "This drop carried no real path (only the desktop app provides one); use the sidebar open button instead",
-  "dropUnavailable": "Opening in the sidebar is unavailable, so this file cannot be opened here"
+  "dropUnavailable": "Opening in the sidebar is unavailable, so this file cannot be opened here",
+  "fishWorking": "Optimizing",
+  "fishWorkingHint": "It looks for the gap first, then rewrites; usually 10-60 s. Cancel stops waiting and throws the answer away",
+  "fishCancelled": "Stopped waiting (the model still finishes in the background, the answer is dropped)",
+  "fishCopy": "Copy rewrite",
+  "fishCopied": "Rewrite copied ✓",
+  "fishCopyFailed": "Copy failed — select the text and copy it by hand",
+  "errSystemRole": "The current model rejects the system role (gateway limit) even after the automatic retry; try another model",
+  "errGateway": "The model gateway returned an error: ",
+  "errNetwork": "Network or gateway interrupted; try again in a moment"
 }
