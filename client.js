@@ -258,6 +258,12 @@ window.__ModuleLoader__.load({
     // instead of pressing it. Same defence dsh-better-sidebar ships.
     const NO_DRAG = { WebkitAppRegion: 'no-drag' };
 
+    // Tint shared by the floating entry points so they read as controls rather
+    // than as part of the page (a white chip on white paper disappears).
+    const ACCENT_SURFACE = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, var(--dsw-alias-bg-overlay))';
+    const ACCENT_SURFACE_HOVER = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, var(--dsw-alias-bg-overlay))';
+    const ACCENT_EDGE = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 42%, var(--dsw-alias-border-l2))';
+
     const BUBBLE_STYLE = [
       'position:absolute',
       'z-index:2147483000',
@@ -269,8 +275,11 @@ window.__ModuleLoader__.load({
       'padding:4px 9px',
       'border-radius:8px',
       'border:1px solid var(--dsw-alias-border-l2)',
+      'border:1px solid ' + ACCENT_EDGE,
       'background:var(--dsw-alias-bg-overlay)',
+      'background:' + ACCENT_SURFACE,
       'color:var(--dsw-alias-label-primary)',
+      'font-weight:600',
       'font-size:12.5px',
       'line-height:1.2',
       'font-family:inherit',
@@ -790,6 +799,10 @@ window.__ModuleLoader__.load({
         button.title = strings.quote;
         button.setAttribute('aria-label', strings.quote);
         button.style.cssText = BUBBLE_STYLE;
+        const tint = () => { button.style.background = ACCENT_SURFACE; };
+        const tintHover = () => { button.style.background = ACCENT_SURFACE_HOVER; };
+        button.addEventListener('mouseenter', tintHover);
+        button.addEventListener('mouseleave', tint);
 
         let frame = 0;
 
@@ -876,6 +889,8 @@ window.__ModuleLoader__.load({
           if (frame) window.cancelAnimationFrame(frame);
           button.removeEventListener('mousedown', onMouseDown);
           button.removeEventListener('click', onClick);
+          button.removeEventListener('mouseenter', tintHover);
+          button.removeEventListener('mouseleave', tint);
           button.remove();
         };
       }, [strings.quote]);
@@ -1165,9 +1180,13 @@ window.__ModuleLoader__.load({
             zIndex: 2147483000,
             padding: '4px 10px',
             borderRadius: '999px',
-            border: `1px solid ${BORDER}`,
+            border: `1px solid ${ACCENT_EDGE}`,
+            // Fallback first, tint second: an unsupported color-mix() drops only
+            // the second declaration and leaves an opaque surface behind.
             background: SURFACE,
-            color: LABEL,
+            backgroundImage: `linear-gradient(${ACCENT_SURFACE}, ${ACCENT_SURFACE})`,
+            color: BRAND,
+            fontWeight: 600,
             fontSize: '12px',
             lineHeight: 1.4,
             fontFamily: 'inherit',
