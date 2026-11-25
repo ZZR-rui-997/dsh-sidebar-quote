@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Document quote",
-    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. The whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review. While it works you see the phase, the text arriving and can cancel (a late answer is thrown away); Alt+O starts it from the keyboard, the preview can copy or try another take, quoted passages stay in a jump-back list, and the shortcut, progress and ask-first default are on the plugin settings page.",
+    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. The whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review. While it works you see the phase, the text arriving and can cancel (a late answer is thrown away); Alt+O starts it from the keyboard, the preview can copy or try another take, quoted passages stay in a jump-back list, and the shortcut, progress and ask-first default are on the plugin settings page, plus a tint for the conversation's own quote button.",
     "detail": "docs/DETAIL.md"
   },
   "quote": "Quote & ask",
@@ -69,5 +69,7 @@
   "setClarifyHint": "Answering first makes the rewrite more accurate; \"just write\" uses what is already there and lets you confirm afterwards",
   "setClarifyAsk": "Ask me",
   "setClarifyProceed": "Just write",
+  "setTint": "Tint the conversation's Quote text button",
+  "setTintHint": "That button is shipped UI and its light surface blends into the page; turn this off to leave it untouched",
   "setNote": "These preferences live in this window on this machine only; they do not sync to other devices."
 }

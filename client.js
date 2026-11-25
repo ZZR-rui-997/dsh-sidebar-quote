@@ -66,13 +66,14 @@ window.__ModuleLoader__.load({
     // means they apply to every session in this window without a host round trip.
     const SETTINGS_KEY = 'sidebar-quote:settings';
     const SETTINGS_EVENT = 'sidebar-quote:settings-changed';
-    const DEFAULT_SETTINGS = { shortcut: true, stream: true, clarify: 'ask' };
+    const DEFAULT_SETTINGS = { shortcut: true, stream: true, clarify: 'ask', tintHostQuote: true };
 
     function normalizeSettings(raw) {
       const input = raw && typeof raw === 'object' ? raw : {};
       return {
         shortcut: input.shortcut !== false,
         stream: input.stream !== false,
+        tintHostQuote: input.tintHostQuote !== false,
         clarify: input.clarify === 'proceed' ? 'proceed' : 'ask',
       };
     }
@@ -246,6 +247,69 @@ window.__ModuleLoader__.load({
 
     // Phase names arrive from the host. An unrecognised phase still renders
     // (as the generic wording) so a newer host never blanks the panel.
+    // The chat transcript's quote button is shipped UI: no slot, no props, just a
+    // <button> the conversation service inserts when text is selected there. Its
+    // label comes from the DSH locale, so a small list covers the supported ones
+    // and anything else on the page is left alone.
+    const HOST_QUOTE_LABELS = ['引用文本', 'Quote text'];
+    function isHostQuotePill(node) {
+      if (!node || node.nodeType !== 1 || String(node.tagName || '').toUpperCase() !== 'BUTTON') return false;
+      const label = String(node.textContent || '').trim();
+      if (label === '') return false;
+      return HOST_QUOTE_LABELS.indexOf(label) >= 0;
+    }
+
+    function paintHostQuotePill(node) {
+      const nodeStyle = node.style;
+      if (typeof nodeStyle.backgroundImage === 'string' && nodeStyle.backgroundImage.indexOf('linear-gradient') === 0) return;
+      if (!node || !node.style) return;
+      node.style.backgroundImage = `linear-gradient(${ACCENT_SURFACE}, ${ACCENT_SURFACE})`;
+      node.style.borderColor = ACCENT_EDGE;
+      node.style.color = 'var(--dsw-alias-label-primary)';
+      node.style.fontWeight = '600';
+    }
+
+    // Sweep once, then keep watching: the pill is created and destroyed with the
+    // selection, so there is no single moment to style it at.
+    function tintHostQuotePills(enabled) {
+      if (!enabled) return () => {};
+      if (typeof document === 'undefined' || !document) return () => {};
+      if (typeof document.querySelectorAll !== 'function') return () => {};
+      let frame = 0;
+      const sweep = () => {
+        frame = 0;
+        const buttons = document.querySelectorAll('button');
+        for (let index = 0; index < buttons.length; index += 1) {
+          if (isHostQuotePill(buttons[index])) paintHostQuotePill(buttons[index]);
+        }
+      };
+      sweep();
+      const Observer = typeof window !== 'undefined' && window ? window.MutationObserver : undefined;
+      if (typeof Observer !== 'function') return () => {};
+      const observer = new Observer(() => {
+        if (frame) return;
+        if (typeof window.requestAnimationFrame === 'function') {
+          frame = window.requestAnimationFrame(sweep);
+        } else {
+          frame = 1;
+          sweep();
+        }
+      });
+      // A host re-render can swap the class name instead of mounting a new
+      // button, so watch that attribute too; the painter is idempotent, so the
+      // extra callbacks cannot loop.
+      observer.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class'],
+      });
+      return () => {
+        observer.disconnect();
+        if (frame && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frame);
+      };
+    }
+
     function phaseLabel(dictionary, phase) {
       if (phase === 'plan') return dictionary.fishPhasePlan;
       if (phase === 'rewrite') return dictionary.fishPhaseRewrite;
@@ -260,9 +324,9 @@ window.__ModuleLoader__.load({
 
     // Tint shared by the floating entry points so they read as controls rather
     // than as part of the page (a white chip on white paper disappears).
-    const ACCENT_SURFACE = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 16%, var(--dsw-alias-bg-overlay))';
-    const ACCENT_SURFACE_HOVER = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, var(--dsw-alias-bg-overlay))';
-    const ACCENT_EDGE = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 42%, var(--dsw-alias-border-l2))';
+    const ACCENT_SURFACE = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 12%, var(--dsw-alias-bg-overlay))';
+    const ACCENT_SURFACE_HOVER = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 22%, var(--dsw-alias-bg-overlay))';
+    const ACCENT_EDGE = 'color-mix(in srgb, var(--dsw-alias-brand-primary) 34%, var(--dsw-alias-border-l2))';
 
     const BUBBLE_STYLE = [
       'position:absolute',
@@ -856,6 +920,18 @@ window.__ModuleLoader__.load({
           frame = window.requestAnimationFrame(place);
         };
 
+        // Closing the sidebar removes the anchor without firing a selection or
+        // scroll event, so the trigger would otherwise stay pinned to a dead
+        // node. A cheap tick is enough: `place` already hides when the anchor is
+        // gone.
+        let tick = 0;
+        if (typeof window.setInterval === 'function') {
+          tick = window.setInterval(() => {
+            if (button.parentNode && !button.parentNode.isConnected) hide();
+            schedule();
+          }, 700);
+        }
+
         const onMouseDown = (event) => {
           event.preventDefault();
           event.stopPropagation();
@@ -887,6 +963,7 @@ window.__ModuleLoader__.load({
           window.removeEventListener('scroll', schedule, true);
           window.removeEventListener('resize', schedule);
           if (frame) window.cancelAnimationFrame(frame);
+          if (tick && typeof window.clearInterval === 'function') window.clearInterval(tick);
           button.removeEventListener('mousedown', onMouseDown);
           button.removeEventListener('click', onClick);
           button.removeEventListener('mouseenter', tintHover);
@@ -2205,7 +2282,7 @@ window.__ModuleLoader__.load({
         if (typeof native.preventDefault === 'function') native.preventDefault();
       };
 
-      const panelHeader = (label) => h('div', {
+      const panelHeader = (label, onClose) => h('div', {
         key: 'header',
         style: PANEL_HEADER_STYLE,
         onPointerDown: startDrag,
@@ -2222,7 +2299,7 @@ window.__ModuleLoader__.load({
           type: 'button',
           'aria-label': strings.cancel,
           title: strings.cancel,
-          onClick: () => setPending(null),
+          onClick: () => (typeof onClose === 'function' ? onClose() : setPending(null)),
           onPointerDown: (event) => {
             if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
           },
@@ -2231,6 +2308,23 @@ window.__ModuleLoader__.load({
       ]);
 
       const panelRow = (buttons) => h('div', { key: 'row', style: PANEL_ROW_STYLE }, buttons);
+
+      // Escape is the escape hatch people reach for; both dialogs honour it.
+      React.useEffect(() => {
+        if (!pending && !quotePanel) return undefined;
+        if (typeof document === 'undefined' || !document || typeof document.addEventListener !== 'function') return undefined;
+        const onKey = (event) => {
+          if (!event || event.key !== 'Escape') return;
+          const native = event.nativeEvent || {};
+          if (native.isComposing || event.keyCode === 229) return;
+          if (event.preventDefault) event.preventDefault();
+          event.stopPropagation();
+          if (pending) setPending(null);
+          setQuotePanel(false);
+        };
+        document.addEventListener('keydown', onKey, true);
+        return () => { document.removeEventListener('keydown', onKey, true); };
+      }, [pending, quotePanel]);
 
       const questionInput = (index) => h('input', {
         key: 'answer',
@@ -2312,7 +2406,7 @@ window.__ModuleLoader__.load({
       // restores the source line and can walk back to the passage.
       const quotesPanel = quotePanel && quotes.length > 0
         ? createPortal(h('div', { style: panelStyle }, [
-          panelHeader(strings.fishQuotesTitle),
+          panelHeader(strings.fishQuotesTitle, () => setQuotePanel(false)),
           h('div', { key: 'body', style: PANEL_BODY_STYLE }, quotes.map((item, index) => h('div', {
             key: 'quote' + index,
             style: { ...PANEL_ROW_STYLE, flexDirection: 'column', alignItems: 'stretch', gap: '4px' },
@@ -2574,6 +2668,8 @@ window.__ModuleLoader__.load({
         setClarifyHint: '问过再改写，结果更准；选「直接写」就先按现有信息改，事后再让你确认',
         setClarifyAsk: '先问我',
         setClarifyProceed: '直接写',
+        setTint: '把对话里的「引用文本」按钮也染成主题色',
+        setTintHint: '那个按钮是 DSH 自带的控件，默认浅灰底在白底上不太显眼；关掉就保持原样',
         setNote: '这些偏好只存在这台机器的这个窗口里，不会同步到别的设备。',
         fishAgain: '换个写法',
         fishQuotes: '引用',
@@ -2646,6 +2742,10 @@ window.__ModuleLoader__.load({
               setClarifyHint: strings.setClarifyHint,
               setClarifyAsk: strings.setClarifyAsk,
               setClarifyProceed: strings.setClarifyProceed,
+              setTint: strings.setTint,
+              setTintHint: strings.setTintHint,
+              setTint: strings.setTint,
+              setTintHint: strings.setTintHint,
               setNote: strings.setNote,
               fishAgain: strings.fishAgain,
               fishQuotes: strings.fishQuotes,
@@ -2742,6 +2842,8 @@ window.__ModuleLoader__.load({
         setClarifyHint: 'Answering first makes the rewrite more accurate; "just write" uses what is already there and lets you confirm afterwards',
         setClarifyAsk: 'Ask me',
         setClarifyProceed: 'Just write',
+        setTint: 'Tint the conversation\'s Quote text button',
+        setTintHint: 'That button is shipped UI and its light surface blends into the page; turn this off to leave it untouched',
         setNote: 'These preferences live in this window on this machine only; they do not sync to other devices.',
         fishAgain: 'Try another',
         fishQuotes: 'Quotes',
@@ -2857,6 +2959,13 @@ window.__ModuleLoader__.load({
               checked: current.stream !== false,
               onChange: (event) => update({ stream: Boolean(event.target.checked) }),
             })),
+          row('tintHostQuote', strings.setTint, strings.setTintHint,
+            h('input', {
+              key: 'input',
+              type: 'checkbox',
+              checked: current.tintHostQuote !== false,
+              onChange: (event) => update({ tintHostQuote: Boolean(event.target.checked) }),
+            })),
           row('clarify', strings.setClarify, strings.setClarifyHint,
             h('select', {
               key: 'input',
@@ -2897,6 +3006,27 @@ window.__ModuleLoader__.load({
         order: 90,
         label: strings.quote,
       }, (props) => h(QuoteBridge, { ...props, commands, strings })));
+
+      // Re-applied whenever the preference changes; the cleanup stops the observer.
+      try {
+        const startTint = () => {
+          const cleanup = tintHostQuotePills(readSettings().tintHostQuote);
+          const stop = () => { if (typeof cleanup === 'function') cleanup(); };
+          if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') {
+            window.addEventListener(SETTINGS_EVENT, stop);
+          }
+          return () => {
+            stop();
+            if (typeof window !== 'undefined' && window && typeof window.removeEventListener === 'function') {
+              window.removeEventListener(SETTINGS_EVENT, stop);
+            }
+          };
+        };
+        if (typeof ctx.effect === 'function') ctx.effect(startTint);
+        else startTint();
+      } catch (error) {
+        console.error('[sidebar-quote] host quote tint unavailable', error);
+      }
 
       safeInject('settings.plugins.tab', () => ctx.slots.register({
         name: 'settings.plugins.tab',

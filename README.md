@@ -54,9 +54,10 @@ reviewed by you before it touches anything.
   source files, and press "Back to the passage" to scroll the open preview to
   that text and highlight it.
 - **Settings page** — under Plugins → this plugin you can turn the `Alt+O`
-  shortcut off, turn the streaming progress off, and choose whether the
-  optimizer asks first when information is missing. These preferences live in
-  this window on this machine only.
+  shortcut off, turn the streaming progress off, choose whether the optimizer
+  asks first when information is missing, and tint the conversation's own
+  `Quote text` button so it stops vanishing into the page. These preferences
+  live in this window on this machine only.
 - Quotes stay read-only through optimization: the rewrite replaces your words,
   never the quoted originals.
 
