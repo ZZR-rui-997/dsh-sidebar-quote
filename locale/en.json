@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Document quote",
-    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. A little whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review before anything touches the composer. While it works you see the elapsed seconds and can cancel (a late answer is thrown away), Alt+O starts it from the keyboard, and the preview panel can copy the rewrite.",
+    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. The whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review. While it works you see the phase, the text arriving and can cancel (a late answer is thrown away); Alt+O starts it from the keyboard, the preview can copy or try another take, quoted passages stay in a jump-back list, and the shortcut, progress and ask-first default are on the plugin settings page.",
     "detail": "docs/DETAIL.md"
   },
   "quote": "Quote & ask",
@@ -50,5 +50,24 @@
   "fishCopyFailed": "Copy failed — select the text and copy it by hand",
   "errSystemRole": "The current model rejects the system role (gateway limit) even after the automatic retry; try another model",
   "errGateway": "The model gateway returned an error: ",
-  "errNetwork": "Network or gateway interrupted; try again in a moment"
+  "errNetwork": "Network or gateway interrupted; try again in a moment",
+  "fishPhasePlan": "Finding the gaps",
+  "fishPhaseRewrite": "Rewriting",
+  "fishChars": "Generated",
+  "fishAgain": "Try another",
+  "fishQuotes": "Quotes",
+  "fishQuotesTitle": "Quotes in this draft",
+  "fishQuoteNoSource": "(source file not recorded)",
+  "fishJump": "Back to the passage",
+  "fishJumpFailed": "That passage is not in the document preview that is open now (you may have switched files)",
+  "setTitle": "Quotes & prompt optimizer",
+  "setShortcut": "Alt+O starts an optimization",
+  "setShortcutHint": "Turn it off to require the fish button, so a stray shortcut cannot start a run",
+  "setStream": "Show generation progress",
+  "setStreamHint": "While waiting, show the current phase and the text generated so far; off keeps only the elapsed time",
+  "setClarify": "Ask me first when something is missing",
+  "setClarifyHint": "Answering first makes the rewrite more accurate; \"just write\" uses what is already there and lets you confirm afterwards",
+  "setClarifyAsk": "Ask me",
+  "setClarifyProceed": "Just write",
+  "setNote": "These preferences live in this window on this machine only; they do not sync to other devices."
 }

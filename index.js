@@ -55,6 +55,9 @@ const GENERATE_PROMPT = `你是一名提示词工程师。把草稿里每个"文
 const REVISE_HINTS = {
   specific: '本轮要求：在已有版本基础上写得更具体。把仍然含糊的地方落实成可执行的做法，但同样的五类不许编造。',
   shorter: '本轮要求：在已有版本基础上更短。删掉重复与铺垫，保留全部约束与验收标准；长度必须真的减少。',
+  // "Try again" is not a correction of the previous answer: it asks for a
+  // different arrangement of the same, still-missing content.
+  again: '本轮要求：换一种组织方式重写。仍然要补齐同样的缺口、遵守同样的禁止项，但行文结构与上一版要有明显区别，不要只改几个词。',
 };
 
 // ---------------------------------------------------------------------------
@@ -96,7 +99,8 @@ function parsePayload(rawInput) {
         // loop, so the plan's questions are dropped and the rewrite goes ahead.
         const clarificationMode = parsed.clarificationMode === 'proceed' ? 'proceed' : undefined;
         const revise = parsed.revise && typeof parsed.revise === 'object'
-          && (parsed.revise.instruction === 'specific' || parsed.revise.instruction === 'shorter')
+          && (parsed.revise.instruction === 'specific' || parsed.revise.instruction === 'shorter'
+            || parsed.revise.instruction === 'again')
           && typeof parsed.revise.text === 'string' && parsed.revise.text.trim()
           ? { instruction: parsed.revise.instruction, text: parsed.revise.text.trim().slice(0, 6000) }
           : undefined;
@@ -385,17 +389,81 @@ function repairLines(verdict) {
 }
 
 // ---------------------------------------------------------------------------
+// Progress for one in-flight optimization
+// ---------------------------------------------------------------------------
+
+// The composer button polls this while a run is in flight: two model rounds can
+// take a minute, and a spinner with no words looks the same as a hang. The host
+// keeps the latest phase plus the tail of the generated text; nothing is stored
+// on disk and entries expire on their own.
+const RUNS = new Map();
+const RUN_KEEP_MS = 120000;
+
+function runIdOf(rawInput) {
+  const match = /"runId"\s*:\s*"([A-Za-z0-9_-]{1,64})"/u.exec(String(rawInput == null ? '' : rawInput));
+  return match ? match[1] : '';
+}
+
+function pruneRuns(now) {
+  const stamp = now == null ? Date.now() : now;
+  for (const [id, run] of RUNS) {
+    if (stamp - run.updatedAt > RUN_KEEP_MS) RUNS.delete(id);
+  }
+}
+
+function beginRun(runId) {
+  pruneRuns();
+  if (!runId) return null;
+  const run = { phase: 'plan', text: '', done: false, error: '', startedAt: Date.now(), updatedAt: Date.now() };
+  RUNS.set(runId, run);
+  return run;
+}
+
+function notePhase(run, phase) {
+  if (!run) return;
+  run.phase = phase;
+  run.updatedAt = Date.now();
+}
+
+function noteDelta(run, text) {
+  if (!run || typeof text !== 'string' || text === '') return;
+  run.text = (run.text + text).slice(-20000);
+  run.updatedAt = Date.now();
+}
+
+function finishRun(run, error) {
+  if (!run) return;
+  run.done = true;
+  run.error = typeof error === 'string' ? error.slice(0, 400) : '';
+  run.updatedAt = Date.now();
+}
+
+function readRun(runId) {
+  const run = RUNS.get(String(runId || ''));
+  if (!run) return null;
+  return {
+    phase: run.phase,
+    chars: run.text.length,
+    tail: run.text.slice(-600),
+    done: run.done,
+    error: run.error,
+    elapsed: Math.max(0, Math.round((Date.now() - run.startedAt) / 1000)),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Model calls
 // ---------------------------------------------------------------------------
 
 /** Drain one stream request into its concatenated text. */
-async function drainStream(llm, request) {
+async function drainStream(llm, request, onDelta) {
   let output = '';
   const stream = llm.stream(request);
   for await (const chunk of stream) {
     if (!chunk) continue;
     if (chunk.type === 'text-delta') {
       output += chunk.text || '';
+      if (typeof onDelta === 'function' && chunk.text) onDelta(chunk.text);
     } else if (chunk.type === 'finish') {
       const kind = chunk.reason && chunk.reason.kind;
       if (kind === 'error') {
@@ -441,12 +509,12 @@ async function complete(ctx, invocation, system, content, options) {
   const userMessage = { role: 'user', content: [{ type: 'text', text: content }] };
 
   try {
-    return await drainStream(llm, { ...request, system, messages: [userMessage] });
+    return await drainStream(llm, { ...request, system, messages: [userMessage] }, opts.onDelta);
   } catch (error) {
     if (!system || !rejectsDeveloperRole(error)) throw error;
     const systemMessage = { role: 'system', content: [{ type: 'text', text: system }] };
     try {
-      return await drainStream(llm, { ...request, messages: [systemMessage, userMessage] });
+      return await drainStream(llm, { ...request, messages: [systemMessage, userMessage] }, opts.onDelta);
     } catch (fallbackError) {
       // Report the original rejection: it names the real cause.
       throw error;
@@ -508,6 +576,27 @@ function planIsUsable(plan) {
 // ---------------------------------------------------------------------------
 
 async function optimize(ctx, invocation) {
+  // The wrapper exists only so every exit path (success, error, thrown) marks
+  // the run finished; the work itself lives in optimizeRun.
+  const run = beginRun(runIdOf(invocation && invocation.rawInput));
+  let outcome = '';
+  try {
+    const result = await optimizeRun(ctx, invocation, {
+      phase: (name) => notePhase(run, name),
+      delta: (text) => noteDelta(run, text),
+    });
+    if (result && result.kind === 'error') outcome = result.text || 'failed';
+    return result;
+  } catch (error) {
+    finishRun(run, error && error.message ? error.message : String(error));
+    throw error;
+  } finally {
+    if (!run || !run.done) finishRun(run, outcome);
+  }
+}
+
+async function optimizeRun(ctx, invocation, progress) {
+  const step = progress || { phase: () => {}, delta: () => {} };
   const payload = parsePayload(invocation && invocation.rawInput);
   if (!payload || payload.segments.length === 0) {
     return { kind: 'error', text: '没有可优化的草稿' };
@@ -542,6 +631,7 @@ async function optimize(ctx, invocation) {
     questionsRefused: payload.clarificationMode === 'proceed' ? true : undefined,
   });
 
+  step.phase('plan');
   let plan = null;
   let planWarning = '';
   try {
@@ -657,11 +747,13 @@ async function optimize(ctx, invocation) {
     return { parts, changes: anyChanges(output), violations, lines };
   };
 
+  step.phase('rewrite');
   let output = '';
   try {
     output = await complete(ctx, invocation, GENERATE_PROMPT, generationInput, {
       temperature: 0.4,
       maxTokens: 8192,
+      onDelta: step.delta,
     });
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
@@ -674,7 +766,7 @@ async function optimize(ctx, invocation) {
     try {
       output = await complete(ctx, invocation, GENERATE_PROMPT,
         `${generationInput}\n\n上一轮输出有问题，请修正后重新输出完整 JSON：\n${repair}\n\n上一轮输出：\n${output}`,
-        { temperature: 0.3, maxTokens: 8192 });
+        { temperature: 0.3, maxTokens: 8192, onDelta: step.delta });
       const retried = evaluate(output);
       if (!retried.invalid) evaluated = retried;
     } catch (error) {
@@ -847,6 +939,16 @@ export function apply(ctx) {
         handler: (invocation) => optimize(ctx, invocation),
       });
       commands.register({
+        name: 'optimize-progress',
+        description: '读取一次提示词优化的进度（阶段、已生成字数、尾部文本）',
+        recordInput: false,
+        handler: (invocation) => {
+          const id = String((invocation && invocation.rawInput) || '').trim().slice(0, 128);
+          const run = readRun(id);
+          return { kind: 'success', text: JSON.stringify(run || { missing: true }) };
+        },
+      });
+      commands.register({
         name: 'save-quote-crop',
         description: '把用户框选的图片区域写入临时文件，返回路径供引用使用',
         recordInput: false,
@@ -864,6 +966,11 @@ export function apply(ctx) {
 
 export const __test__ = {
   optimize,
+  optimizeRun,
+  readRun,
+  beginRun,
+  pruneRuns,
+  runIdOf,
   complete,
   rejectsDeveloperRole,
   saveCrop,

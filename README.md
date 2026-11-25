@@ -40,10 +40,23 @@ reviewed by you before it touches anything.
      listing what changed and which gap each change closes. Nothing is written
      to the composer until you press "Write to composer". One click on ↩
      restores your original draft.
-- **While it works** — a small panel shows the elapsed seconds and a Cancel
-  button. Cancelling only stops the wait: the answer is thrown away, never
-  written behind your back. `Alt+O` starts an optimization from the keyboard.
-  The preview panel can also copy the rewrite to the clipboard.
+- **While it works** — the panel says which stage is running (finding the gaps,
+  then rewriting), how many characters have arrived, and shows the tail of the
+  text as it streams in, next to the elapsed seconds and a Cancel button.
+  Cancelling only stops the wait: the answer is thrown away, never written
+  behind your back. `Alt+O` starts an optimization from the keyboard.
+- **Preview actions** — copy the rewrite to the clipboard, ask for another take
+  ("Try another" restructures the result while closing the same gaps), shorten
+  it, or make it more concrete. Every one of those still ends in the same
+  confirm step before anything reaches the composer.
+- **Quote list** — every quote you inserted is kept per session behind a small
+  "Quotes N" chip next to the whale. Open it to see the passages and their
+  source files, and press "Back to the passage" to scroll the open preview to
+  that text and highlight it.
+- **Settings page** — under Plugins → this plugin you can turn the `Alt+O`
+  shortcut off, turn the streaming progress off, and choose whether the
+  optimizer asks first when information is missing. These preferences live in
+  this window on this machine only.
 - Quotes stay read-only through optimization: the rewrite replaces your words,
   never the quoted originals.
 

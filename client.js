@@ -57,6 +57,201 @@ window.__ModuleLoader__.load({
       return handled;
     }
 
+    // ----------------------------------------------------------------
+    // Preferences
+    // ----------------------------------------------------------------
+
+    // The settings page is root-scoped: it has no session, so it cannot use the
+    // session command channel. Preferences live in the page itself, which also
+    // means they apply to every session in this window without a host round trip.
+    const SETTINGS_KEY = 'sidebar-quote:settings';
+    const SETTINGS_EVENT = 'sidebar-quote:settings-changed';
+    const DEFAULT_SETTINGS = { shortcut: true, stream: true, clarify: 'ask' };
+
+    function normalizeSettings(raw) {
+      const input = raw && typeof raw === 'object' ? raw : {};
+      return {
+        shortcut: input.shortcut !== false,
+        stream: input.stream !== false,
+        clarify: input.clarify === 'proceed' ? 'proceed' : 'ask',
+      };
+    }
+
+    function readSettings() {
+      try {
+        if (typeof localStorage === 'undefined' || !localStorage) return { ...DEFAULT_SETTINGS };
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        if (!raw) return { ...DEFAULT_SETTINGS };
+        return normalizeSettings(JSON.parse(raw));
+      } catch {
+        // A corrupted entry must not break the button: fall back to defaults.
+        return { ...DEFAULT_SETTINGS };
+      }
+    }
+
+    function saveSettings(next) {
+      const value = normalizeSettings(next);
+      try {
+        if (typeof localStorage !== 'undefined' && localStorage) {
+          localStorage.setItem(SETTINGS_KEY, JSON.stringify(value));
+        }
+      } catch {
+        // Private mode may refuse writes; the in-memory copy still applies.
+      }
+      try {
+        if (typeof window !== 'undefined' && window && typeof window.dispatchEvent === 'function'
+          && typeof CustomEvent === 'function') {
+          window.dispatchEvent(new CustomEvent(SETTINGS_EVENT));
+        }
+      } catch {
+        // No event bus: the next mount picks the value up from storage.
+      }
+      return value;
+    }
+
+    // The host keeps progress for one run under this id; the panel polls it
+    // while the two model rounds are in flight.
+    function newRunId() {
+      return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
+    // ----------------------------------------------------------------
+    // Quotes this session has put into the composer
+    // ----------------------------------------------------------------
+
+    // The composer keeps the quoted text, but not where it came from: once the
+    // chip is in the draft the source line is gone. This log remembers the
+    // source so the list can walk back to the passage in the open preview.
+    const quotedBySession = new Map();
+    const quoteWatchers = new Set();
+
+    function quotesFor(sessionId) {
+      const list = quotedBySession.get(sessionId);
+      return Array.isArray(list) ? list : [];
+    }
+
+    function rememberQuote(sessionId, entry) {
+      if (!sessionId || !entry || !entry.text) return;
+      const list = quotesFor(sessionId).slice();
+      list.push({
+        text: String(entry.text).slice(0, 8000),
+        source: String(entry.source || ''),
+        crop: Boolean(entry.crop),
+        at: Date.now(),
+      });
+      quotedBySession.set(sessionId, list.slice(-40));
+      for (const watcher of Array.from(quoteWatchers)) {
+        try {
+          watcher(quotesFor(sessionId));
+        } catch {
+          // A broken watcher must not stop the composer from receiving a quote.
+        }
+      }
+    }
+
+    function escapeForPattern(text) {
+      return String(text).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    }
+
+    // A quoted passage comes from text that had line breaks in the preview; the
+    // stored copy keeps them as spaces or as markdown prefixes. Matching word by
+    // word with flexible whitespace is far more forgiving than comparing raw
+    // strings, and it cannot match across unrelated text.
+    function flexiblePattern(needle) {
+      const words = String(needle || '').split(/\s+/u).map((word) => word.trim()).filter(Boolean);
+      if (words.length === 0) return null;
+      return new RegExp(words.map(escapeForPattern).join('\\s+'), 'u');
+    }
+
+    // Map an index/length in the concatenated text back onto text nodes, which
+    // is what a Range needs. Pure so it can be tested without a DOM.
+    function locateInNodes(nodes, index, length) {
+      let startNode = null;
+      let startOffset = 0;
+      let endNode = null;
+      let endOffset = 0;
+      for (const entry of nodes) {
+        const nodeLength = String(entry.text || '').length;
+        const nodeEnd = entry.start + nodeLength;
+        if (!startNode && index >= entry.start && index < nodeEnd) {
+          startNode = entry.node;
+          startOffset = index - entry.start;
+        }
+        const tail = index + length;
+        if (!endNode && tail > entry.start && tail <= nodeEnd) {
+          endNode = entry.node;
+          endOffset = tail - entry.start;
+        }
+      }
+      if (!startNode || !endNode) return null;
+      return { startNode, startOffset, endNode, endOffset };
+    }
+
+    // Walk back to the quoted passage in whichever document preview is open.
+    function jumpToQuote(text) {
+      try {
+        if (typeof document === 'undefined' || !document.querySelectorAll) return false;
+        const pattern = flexiblePattern(String(text || '').slice(0, 400));
+        if (!pattern) return false;
+        const roots = Array.from(document.querySelectorAll('[data-textpreview-content]'));
+        for (const root of roots) {
+          const nodes = [];
+          let whole = '';
+          const walker = typeof document.createTreeWalker === 'function'
+            ? document.createTreeWalker(root, 4, null)
+            : null;
+          if (!walker) continue;
+          let node = walker.nextNode();
+          while (node) {
+            const value = node.nodeValue || '';
+            nodes.push({ node, start: whole.length, text: value });
+            whole += value;
+            node = walker.nextNode();
+          }
+          const match = pattern.exec(whole);
+          if (!match) continue;
+          const spot = locateInNodes(nodes, match.index, match[0].length);
+          if (!spot) continue;
+          const range = document.createRange();
+          range.setStart(spot.startNode, spot.startOffset);
+          range.setEnd(spot.endNode, spot.endOffset);
+          const selection = window.getSelection && window.getSelection();
+          if (selection) {
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+          const rect = range.getBoundingClientRect ? range.getBoundingClientRect() : null;
+          const scroller = root.closest ? root.closest('[data-textpreview-body]') : null;
+          if (scroller && typeof scroller.scrollTop === 'number' && rect) {
+            scroller.scrollTop += rect.top - scroller.getBoundingClientRect().top - scroller.clientHeight / 2;
+          }
+          return true;
+        }
+        return false;
+      } catch (error) {
+        console.error('[sidebar-quote] jump to quote failed', error);
+        return false;
+      }
+    }
+
+    // Polling is a nicety, so a host page without timers (or a test sandbox)
+    // must degrade to "no progress", never to a crash on click.
+    function startPolling(tick, milliseconds) {
+      if (typeof setInterval !== 'function') return () => {};
+      const handle = setInterval(tick, milliseconds);
+      return () => {
+        if (typeof clearInterval === 'function') clearInterval(handle);
+      };
+    }
+
+    // Phase names arrive from the host. An unrecognised phase still renders
+    // (as the generic wording) so a newer host never blanks the panel.
+    function phaseLabel(dictionary, phase) {
+      if (phase === 'plan') return dictionary.fishPhasePlan;
+      if (phase === 'rewrite') return dictionary.fishPhaseRewrite;
+      return dictionary.fishWorking;
+    }
+
     // The desktop shell marks top-level UI bands as window-drag regions
     // (`-webkit-app-region: drag`). Everything this plugin portals to <body>
     // would inherit that, so a click on a floating button would drag the window
@@ -1190,6 +1385,11 @@ window.__ModuleLoader__.load({
                 }
                 if (!added) console.error('[sidebar-quote] question text was not inserted');
               }
+              rememberQuote(sessionId, {
+                text: baseQuote,
+                source: (payload && payload.source) || '',
+                crop: Boolean(cropNote),
+              });
               return true;
             }
 
@@ -1347,9 +1547,16 @@ window.__ModuleLoader__.load({
       const inputState = useInputHook((state) => state);
 
       const [busy, setBusy] = React.useState(false);
+      const [progress, setProgress] = React.useState(null);
+      const [quotes, setQuotes] = React.useState([]);
+      const [settings, setSettings] = React.useState(() => readSettings());
+      const settingsRef = React.useRef(settings);
+      settingsRef.current = settings;
+      const [quotePanel, setQuotePanel] = React.useState(false);
       const [busySince, setBusySince] = React.useState(0);
       const [elapsed, setElapsed] = React.useState(0);
       const waitRef = React.useRef({ id: 0, cancelled: false });
+      const pollStopRef = React.useRef(() => {});
       const runRef = React.useRef(null);
       const [notice, setNotice] = React.useState(null);
       const [undo, setUndo] = React.useState(null);
@@ -1576,7 +1783,8 @@ window.__ModuleLoader__.load({
           return;
         }
 
-        const payload = { segments: split.segments, quotes: split.quoteTexts };
+        const runId = newRunId();
+        const payload = { segments: split.segments, quotes: split.quoteTexts, runId };
         if (opts.answers && opts.answers.length > 0) payload.answers = opts.answers;
         if (opts.revise) payload.revise = opts.revise;
         // "Just rewrite it" must not turn into a second round of questions.
@@ -1586,8 +1794,42 @@ window.__ModuleLoader__.load({
         const wait = { id: waitRef.current.id + 1, cancelled: false };
         waitRef.current = wait;
         setBusy(true);
+        setProgress({ phase: 'plan', chars: 0, tail: '' });
         setBusySince(Date.now());
         setElapsed(0);
+        // Progress arrives out of band: the command channel answers once, at the
+        // very end, so the panel asks the host what the run is doing meanwhile.
+        let stopPolling = () => {};
+        const poll = async () => {
+          if (waitRef.current !== wait || wait.cancelled) {
+            stopPolling();
+            return;
+          }
+          try {
+            const answer = await commands.execute(sessionId,
+              `/optimize-progress ${JSON.stringify({ runId })}`, []);
+            if (waitRef.current !== wait || wait.cancelled) return;
+            const execution = answer && answer.ok ? answer.value : null;
+            const commandResult = execution && execution.result;
+            if (!commandResult || commandResult.kind !== 'success' || !commandResult.text) return;
+            let info = null;
+            try {
+              info = JSON.parse(commandResult.text);
+            } catch {
+              info = null;
+            }
+            if (!info || info.missing) return;
+            if (info.done) {
+              stopPolling();
+              return;
+            }
+            setProgress({ phase: info.phase, chars: info.chars, tail: info.tail });
+          } catch {
+            // Progress is a nicety; a failed poll must never break the run.
+          }
+        };
+        if (settingsRef.current.stream) stopPolling = startPolling(poll, 300);
+        pollStopRef.current = () => { stopPolling(); };
         try {
           // JSON.stringify escapes every newline into the two characters `\n`,
           // so the payload is already a single line and needs no extra
@@ -1651,6 +1893,8 @@ window.__ModuleLoader__.load({
         } catch (error) {
           showNotice(translateFailure(error && error.message));
         } finally {
+          stopPolling();
+          setProgress(null);
           setBusy(false);
         }
       };
@@ -1659,6 +1903,8 @@ window.__ModuleLoader__.load({
       // stop waiting, ignore whatever comes back, and free the button now.
       const cancelWait = () => {
         waitRef.current = { ...waitRef.current, cancelled: true };
+        pollStopRef.current();
+        setProgress(null);
         setBusy(false);
         showNotice(strings.fishCancelled);
       };
@@ -1704,6 +1950,26 @@ window.__ModuleLoader__.load({
       runRef.current = runOptimize;
 
       React.useEffect(() => {
+        const sync = () => setSettings(readSettings());
+        if (typeof window !== 'undefined' && window && typeof window.addEventListener === 'function') {
+          window.addEventListener(SETTINGS_EVENT, sync);
+        }
+        return () => {
+          if (typeof window !== 'undefined' && window && typeof window.removeEventListener === 'function') {
+            window.removeEventListener(SETTINGS_EVENT, sync);
+          }
+        };
+      }, []);
+
+      React.useEffect(() => {
+        if (!sessionId) return undefined;
+        setQuotes(quotesFor(sessionId));
+        const watcher = (list) => setQuotes(list.slice());
+        quoteWatchers.add(watcher);
+        return () => quoteWatchers.delete(watcher);
+      }, [sessionId]);
+
+      React.useEffect(() => {
         if (!busy) return undefined;
         const timer = window.setInterval(() => {
           setElapsed(Math.round((Date.now() - busySince) / 1000));
@@ -1714,13 +1980,14 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (typeof document === 'undefined' || !document.addEventListener) return undefined;
         const onKey = (event) => {
+          if (!settingsRef.current.shortcut) return;
           if (!event.altKey || event.ctrlKey || event.metaKey) return;
           if (String(event.key || '').toLowerCase() !== 'o') return;
           const target = event.target;
           const tag = target && target.tagName ? String(target.tagName).toLowerCase() : '';
           if (tag === 'input' || tag === 'textarea') return;
           event.preventDefault();
-          if (runRef.current) runRef.current();
+          if (runRef.current) runRef.current({ skipQuestions: settingsRef.current.clarify === 'proceed' });
         };
         document.addEventListener('keydown', onKey, true);
         return () => document.removeEventListener('keydown', onKey, true);
@@ -1808,7 +2075,7 @@ window.__ModuleLoader__.load({
         onClick: (event) => {
           event.preventDefault();
           event.stopPropagation();
-          runOptimize();
+          runOptimize({ skipQuestions: settingsRef.current.clarify === 'proceed' });
         },
         style: {
           display: 'inline-flex',
@@ -1988,7 +2255,8 @@ window.__ModuleLoader__.load({
           },
         }, [
           h('div', { key: 'line', style: { display: 'flex', alignItems: 'center', gap: '10px' } }, [
-            h('span', { key: 'text', style: { fontSize: '12.5px', color: LABEL } }, `${strings.fishWorking} · ${elapsed}s`),
+            h('span', { key: 'text', style: { fontSize: '12.5px', color: LABEL } },
+              `${phaseLabel(strings, progress && progress.phase)} · ${elapsed}s`),
             h('button', {
               key: 'stop',
               type: 'button',
@@ -1996,7 +2264,65 @@ window.__ModuleLoader__.load({
               style: buttonStyle(false),
             }, strings.cancel),
           ]),
+          progress && progress.chars > 0
+            ? h('div', { key: 'count', style: { fontSize: '11px', color: LABEL_2, marginTop: '4px' } },
+              `${strings.fishChars} ${progress.chars}`)
+            : null,
+          progress && progress.tail
+            ? h('div', {
+              key: 'tail',
+              style: {
+                marginTop: '6px',
+                maxHeight: '76px',
+                overflow: 'hidden',
+                fontSize: '11px',
+                lineHeight: 1.4,
+                color: LABEL_2,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                borderLeft: `2px solid ${BORDER}`,
+                paddingLeft: '6px',
+              },
+            }, progress.tail.slice(-240))
+            : null,
           h('div', { key: 'hint', style: { fontSize: '11px', color: LABEL_2, lineHeight: 1.45 } }, strings.fishWorkingHint),
+        ]), document.body)
+        : null;
+
+      // The composer shows quote chips but not where they came from. This list
+      // restores the source line and can walk back to the passage.
+      const quotesPanel = quotePanel && quotes.length > 0
+        ? createPortal(h('div', { style: panelStyle }, [
+          panelHeader(strings.fishQuotesTitle),
+          h('div', { key: 'body', style: PANEL_BODY_STYLE }, quotes.map((item, index) => h('div', {
+            key: 'quote' + index,
+            style: { ...PANEL_ROW_STYLE, flexDirection: 'column', alignItems: 'stretch', gap: '4px' },
+          }, [
+            h('div', {
+              key: 'text',
+              style: { fontSize: '12px', color: LABEL, lineHeight: 1.45, whiteSpace: 'pre-wrap' },
+            }, item.text.length > 160 ? item.text.slice(0, 160) + '…' : item.text),
+            h('div', { key: 'meta', style: { display: 'flex', alignItems: 'center', gap: '8px' } }, [
+              h('span', { key: 'source', style: { ...META_LABEL_STYLE, margin: 0, flex: '1 1 auto' } },
+                item.source || strings.fishQuoteNoSource),
+              h('button', {
+                key: 'jump',
+                type: 'button',
+                onClick: () => {
+                  if (!jumpToQuote(item.text)) showNotice(strings.fishJumpFailed);
+                },
+                style: buttonStyle(false),
+              }, strings.fishJump),
+            ]),
+          ]))),
+          panelRow([
+            h('button', {
+              key: 'close',
+              type: 'button',
+              onClick: () => setQuotePanel(false),
+              style: buttonStyle(false),
+            }, strings.cancel),
+          ]),
         ]), document.body)
         : null;
 
@@ -2074,6 +2400,12 @@ window.__ModuleLoader__.load({
               style: buttonStyle(false),
             }, strings.fishCopy),
             h('button', {
+              key: 'again',
+              type: 'button',
+              onClick: () => refine('again'),
+              style: buttonStyle(false),
+            }, strings.fishAgain),
+            h('button', {
               key: 'shorter',
               type: 'button',
               onClick: () => refine('shorter'),
@@ -2133,7 +2465,39 @@ window.__ModuleLoader__.load({
         h('div', {
           key: 'wrap',
           style: { display: 'inline-flex', alignItems: 'center', gap: '1px', flex: 'none' },
-        }, [avatarButton, undoButton].filter(Boolean)),
+        }, [
+          quotes.length > 0
+            ? h('button', {
+              key: 'quotes',
+              type: 'button',
+              title: strings.fishQuotesTitle,
+              className: 'dsh-sidebar-quote-quotes',
+              onClick: (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setQuotePanel((open) => !open);
+              },
+              style: {
+                ...NO_DRAG,
+                display: 'inline-flex',
+                alignItems: 'center',
+                height: '20px',
+                padding: '0 6px',
+                marginRight: '2px',
+                border: `1px solid ${BORDER}`,
+                borderRadius: '999px',
+                background: SURFACE,
+                color: LABEL_2,
+                fontSize: '11px',
+                lineHeight: 1,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              },
+            }, `${strings.fishQuotes} ${quotes.length}`)
+            : null,
+          avatarButton,
+          undoButton,
+        ].filter(Boolean)),
         notice ? (createPortal
           ? createPortal(h('div', {
             key: 'notice',
@@ -2157,6 +2521,7 @@ window.__ModuleLoader__.load({
             },
           }, notice), document.body)
           : null) : null,
+        quotesPanel,
         workingPanel,
         questionsPanel,
         previewPanel,
@@ -2178,6 +2543,25 @@ window.__ModuleLoader__.load({
         fishTitle: '优化提示词（可选）',
         fishBusy: '正在优化…',
         fishWorking: '正在优化',
+        fishPhasePlan: '正在找缺口',
+        fishPhaseRewrite: '正在改写',
+        fishChars: '已生成',
+        setTitle: '引用与提示词优化',
+        setShortcut: '用 Alt+O 直接优化',
+        setShortcutHint: '关掉之后只有点输入框旁的小鲸鱼才会开始，避免误触',
+        setStream: '显示生成进度',
+        setStreamHint: '等待时显示当前阶段与已经生成的文字；关掉只显示已用时间',
+        setClarify: '缺信息时先问我',
+        setClarifyHint: '问过再改写，结果更准；选「直接写」就先按现有信息改，事后再让你确认',
+        setClarifyAsk: '先问我',
+        setClarifyProceed: '直接写',
+        setNote: '这些偏好只存在这台机器的这个窗口里，不会同步到别的设备。',
+        fishAgain: '换个写法',
+        fishQuotes: '引用',
+        fishQuotesTitle: '这条草稿里的引用',
+        fishQuoteNoSource: '（没有记录来源文件）',
+        fishJump: '跳回原文',
+        fishJumpFailed: '没能在当前打开的文档里找到这段原文（可能已经切换到别的文件）',
         fishWorkingHint: '先找缺口再改写，通常十几秒到一分钟；不想等可以点取消，结果会被丢弃',
         fishCancelled: '已取消等待（模型仍会跑完，结果丢弃）',
         fishCopy: '复制改写',
@@ -2231,6 +2615,25 @@ window.__ModuleLoader__.load({
               fishTitle: strings.fishTitle,
               fishBusy: strings.fishBusy,
               fishWorking: strings.fishWorking,
+              fishPhasePlan: strings.fishPhasePlan,
+              fishPhaseRewrite: strings.fishPhaseRewrite,
+              fishChars: strings.fishChars,
+              setTitle: strings.setTitle,
+              setShortcut: strings.setShortcut,
+              setShortcutHint: strings.setShortcutHint,
+              setStream: strings.setStream,
+              setStreamHint: strings.setStreamHint,
+              setClarify: strings.setClarify,
+              setClarifyHint: strings.setClarifyHint,
+              setClarifyAsk: strings.setClarifyAsk,
+              setClarifyProceed: strings.setClarifyProceed,
+              setNote: strings.setNote,
+              fishAgain: strings.fishAgain,
+              fishQuotes: strings.fishQuotes,
+              fishQuotesTitle: strings.fishQuotesTitle,
+              fishQuoteNoSource: strings.fishQuoteNoSource,
+              fishJump: strings.fishJump,
+              fishJumpFailed: strings.fishJumpFailed,
               fishWorkingHint: strings.fishWorkingHint,
               fishCancelled: strings.fishCancelled,
               fishCopy: strings.fishCopy,
@@ -2280,6 +2683,25 @@ window.__ModuleLoader__.load({
               fishTitle: 'Optimize prompt (optional)',
               fishBusy: 'Optimizing…',
               fishWorking: 'Optimizing',
+              fishPhasePlan: 'Finding the gaps',
+              fishPhaseRewrite: 'Rewriting',
+              fishChars: 'Generated',
+              setTitle: 'Quotes & prompt optimizer',
+              setShortcut: 'Alt+O starts an optimization',
+              setShortcutHint: 'Turn it off to require the fish button, so a stray shortcut cannot start a run',
+              setStream: 'Show generation progress',
+              setStreamHint: 'While waiting, show the current phase and the text generated so far; off keeps only the elapsed time',
+              setClarify: 'Ask me first when something is missing',
+              setClarifyHint: 'Answering first makes the rewrite more accurate; "just write" uses what is already there and lets you confirm afterwards',
+              setClarifyAsk: 'Ask me',
+              setClarifyProceed: 'Just write',
+              setNote: 'These preferences live in this window on this machine only; they do not sync to other devices.',
+              fishAgain: 'Try another',
+              fishQuotes: 'Quotes',
+              fishQuotesTitle: 'Quotes in this draft',
+              fishQuoteNoSource: '(source file not recorded)',
+              fishJump: 'Back to the passage',
+              fishJumpFailed: 'That passage is not in the document preview that is open now (you may have switched files)',
               fishWorkingHint: 'It looks for the gap first, then rewrites; usually 10-60 s. Cancel stops waiting and throws the answer away',
               fishCancelled: 'Stopped waiting (the model still finishes in the background, the answer is dropped)',
               fishCopy: 'Copy rewrite',
@@ -2289,6 +2711,25 @@ window.__ModuleLoader__.load({
               errGateway: 'The model gateway returned an error: ',
               errNetwork: 'Network or gateway interrupted; try again in a moment',
         fishWorking: 'Optimizing',
+        fishPhasePlan: 'Finding the gaps',
+        fishPhaseRewrite: 'Rewriting',
+        fishChars: 'Generated',
+        setTitle: 'Quotes & prompt optimizer',
+        setShortcut: 'Alt+O starts an optimization',
+        setShortcutHint: 'Turn it off to require the fish button, so a stray shortcut cannot start a run',
+        setStream: 'Show generation progress',
+        setStreamHint: 'While waiting, show the current phase and the text generated so far; off keeps only the elapsed time',
+        setClarify: 'Ask me first when something is missing',
+        setClarifyHint: 'Answering first makes the rewrite more accurate; "just write" uses what is already there and lets you confirm afterwards',
+        setClarifyAsk: 'Ask me',
+        setClarifyProceed: 'Just write',
+        setNote: 'These preferences live in this window on this machine only; they do not sync to other devices.',
+        fishAgain: 'Try another',
+        fishQuotes: 'Quotes',
+        fishQuotesTitle: 'Quotes in this draft',
+        fishQuoteNoSource: '(source file not recorded)',
+        fishJump: 'Back to the passage',
+        fishJumpFailed: 'That passage is not in the document preview that is open now (you may have switched files)',
         fishWorkingHint: 'It looks for the gap first, then rewrites; usually 10-60 s. Cancel stops waiting and throws the answer away',
         fishCancelled: 'Stopped waiting (the model still finishes in the background, the answer is dropped)',
         fishCopy: 'Copy rewrite',
@@ -2358,6 +2799,59 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const SettingsPanel = () => {
+        const [current, setCurrent] = React.useState(() => readSettings());
+        // Merge against storage, not this render's snapshot: one change must not
+        // roll back another control that was flipped since the last render.
+        const update = (patch) => setCurrent(saveSettings({ ...readSettings(), ...patch }));
+        const row = (key, label, hint, control) => h('div', {
+          key,
+          style: {
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: '16px',
+            padding: '10px 0',
+            borderBottom: `1px solid ${BORDER}`,
+          },
+        }, [
+          h('div', { key: 'label', style: { display: 'flex', flexDirection: 'column', gap: '2px' } }, [
+            h('span', { key: 'name', style: { fontSize: '13px', color: LABEL } }, label),
+            hint ? h('span', { key: 'hint', style: { fontSize: '11.5px', color: LABEL_2, lineHeight: 1.45 } }, hint) : null,
+          ]),
+          h('div', { key: 'control', style: { flex: 'none', paddingTop: '1px' } }, control),
+        ]);
+        return h('div', {
+          style: { display: 'flex', flexDirection: 'column', gap: '2px', padding: '4px 0', maxWidth: '620px' },
+        }, [
+          row('shortcut', strings.setShortcut, strings.setShortcutHint,
+            h('input', {
+              key: 'input',
+              type: 'checkbox',
+              checked: current.shortcut !== false,
+              onChange: (event) => update({ shortcut: Boolean(event.target.checked) }),
+            })),
+          row('stream', strings.setStream, strings.setStreamHint,
+            h('input', {
+              key: 'input',
+              type: 'checkbox',
+              checked: current.stream !== false,
+              onChange: (event) => update({ stream: Boolean(event.target.checked) }),
+            })),
+          row('clarify', strings.setClarify, strings.setClarifyHint,
+            h('select', {
+              key: 'input',
+              value: current.clarify === 'proceed' ? 'proceed' : 'ask',
+              onChange: (event) => update({ clarify: event.target.value === 'proceed' ? 'proceed' : 'ask' }),
+              style: { fontFamily: 'inherit', fontSize: '12.5px' },
+            }, [
+              h('option', { key: 'ask', value: 'ask' }, strings.setClarifyAsk),
+              h('option', { key: 'proceed', value: 'proceed' }, strings.setClarifyProceed),
+            ])),
+          h('div', { key: 'note', style: { ...META_LABEL_STYLE, marginTop: '10px' } }, strings.setNote),
+        ]);
+      };
+
       const Fish = (props) => h(PromptFish, { ...props, commands, strings, openInSidebar });
 
       const Selection = () => h(QuoteSelection, { strings });
@@ -2384,6 +2878,13 @@ window.__ModuleLoader__.load({
         order: 90,
         label: strings.quote,
       }, (props) => h(QuoteBridge, { ...props, commands, strings })));
+
+      safeInject('settings.plugins.tab', () => ctx.slots.register({
+        name: 'settings.plugins.tab',
+        id: 'sidebar-quote.settings',
+        order: 60,
+        label: strings.setTitle,
+      }, SettingsPanel));
 
       safeInject('conversation.input.right', () => ctx.slots.register({
         name: 'conversation.input.right',
