@@ -1643,6 +1643,8 @@ window.__ModuleLoader__.load({
       const [quotePanel, setQuotePanel] = React.useState(false);
       const [busySince, setBusySince] = React.useState(0);
       const [elapsed, setElapsed] = React.useState(0);
+      // Where the reader dragged the working panel to, if anywhere.
+      const [workPos, setWorkPos] = React.useState(null);
       const waitRef = React.useRef({ id: 0, cancelled: false });
       const pollStopRef = React.useRef(() => {});
       const runRef = React.useRef(null);
@@ -2214,6 +2216,21 @@ window.__ModuleLoader__.load({
         };
       };
 
+      // Dragging needs numbers, not "123px" strings.
+      const spotNumbers = (width, height, ratio) => {
+        const spot = floatingSpot(width, height, ratio);
+        return { left: parseInt(spot.left, 10) || 12, top: parseInt(spot.top, 10) || 12 };
+      };
+
+      const clampSpot = (left, top, width, height) => {
+        const viewportWidth = window.innerWidth || 1024;
+        const viewportHeight = window.innerHeight || 768;
+        return {
+          left: Math.max(8, Math.min(Math.round(left), viewportWidth - width - 8)),
+          top: Math.max(8, Math.min(Math.round(top), viewportHeight - height - 8)),
+        };
+      };
+
       const clampPanel = (candidate) => {
         const geometry = panelGeometry();
         const width = candidate.width || geometry.width;
@@ -2336,13 +2353,52 @@ window.__ModuleLoader__.load({
 
       // Long rounds spend tens of seconds in the model with nothing on screen.
       // A counter plus a way out is the difference between "working" and "hung".
+      // The panel used to be pinned to one guessed spot, which was wrong for
+      // every layout but one. It now starts centred and can be dragged anywhere
+      // inside the window; button clicks are exempt so "cancel" still works.
+      const WORK_PANEL_SIZE = { width: 340, height: 132 };
+      const grabWorkPanel = (event) => {
+        if (!event || typeof event.clientX !== 'number' || typeof event.clientY !== 'number') return;
+        const target = event.target;
+        const tagName = target && target.tagName ? String(target.tagName).toUpperCase() : '';
+        if (tagName === 'BUTTON' || tagName === 'INPUT' || tagName === 'A') return;
+        if (typeof window.addEventListener !== 'function') return;
+        const base = workPos || spotNumbers(WORK_PANEL_SIZE.width, WORK_PANEL_SIZE.height);
+        const startX = event.clientX;
+        const startY = event.clientY;
+        let moved = false;
+        const move = (moveEvent) => {
+          if (!moveEvent || typeof moveEvent.clientX !== 'number') return;
+          const dx = moveEvent.clientX - startX;
+          const dy = moveEvent.clientY - startY;
+          // A tiny wobble is a click, not a drag.
+          if (!moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+          moved = true;
+          setWorkPos(clampSpot(base.left + dx, base.top + dy, WORK_PANEL_SIZE.width, WORK_PANEL_SIZE.height));
+        };
+        const stop = () => {
+          if (typeof window.removeEventListener === 'function') {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', stop);
+          }
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', stop);
+      };
+
       const workingPanel = busy && !pending && createPortal
         ? createPortal(h('div', {
+          onPointerDown: grabWorkPanel,
           style: {
             ...CARD_STYLE,
-            ...floatingSpot(340, 132),
+            ...(workPos
+              ? { left: `${workPos.left}px`, top: `${workPos.top}px` }
+              : floatingSpot(340, 132)),
             maxWidth: '340px',
             zIndex: 2147483602,
+            cursor: 'grab',
+            touchAction: 'none',
+            userSelect: 'none',
           },
         }, [
           h('div', { key: 'line', style: { display: 'flex', alignItems: 'center', gap: '10px' } }, [

@@ -40,11 +40,14 @@ reviewed by you before it touches anything.
      listing what changed and which gap each change closes. Nothing is written
      to the composer until you press "Write to composer". One click on ↩
      restores your original draft.
-- **While it works** — the panel says which stage is running (finding the gaps,
-  then rewriting), how many characters have arrived, and shows the tail of the
-  text as it streams in, next to the elapsed seconds and a Cancel button.
-  Cancelling only stops the wait: the answer is thrown away, never written
-  behind your back. `Alt+O` starts an optimization from the keyboard.
+- **While it works** — a small floating panel sits in the middle of the window
+  and shows the elapsed seconds next to a Cancel button. Drag it by its body to
+  park it wherever it is out of your way; it starts centred instead of covering
+  the top-left corner. It deliberately does not poll the host for progress:
+  every command execution leaves a record in the conversation, so polling would
+  bury the transcript. Cancelling only stops the wait: the answer is thrown
+  away, never written behind your back. `Alt+O` starts an optimization from the
+  keyboard.
 - **Preview actions** — copy the rewrite to the clipboard, ask for another take
   ("Try another" restructures the result while closing the same gaps), shorten
   it, or make it more concrete. Every one of those still ends in the same
