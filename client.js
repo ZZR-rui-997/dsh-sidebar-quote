@@ -66,13 +66,12 @@ window.__ModuleLoader__.load({
     // means they apply to every session in this window without a host round trip.
     const SETTINGS_KEY = 'sidebar-quote:settings';
     const SETTINGS_EVENT = 'sidebar-quote:settings-changed';
-    const DEFAULT_SETTINGS = { shortcut: true, stream: true, clarify: 'ask', tintHostQuote: true };
+    const DEFAULT_SETTINGS = { shortcut: true, clarify: 'ask', tintHostQuote: true };
 
     function normalizeSettings(raw) {
       const input = raw && typeof raw === 'object' ? raw : {};
       return {
         shortcut: input.shortcut !== false,
-        stream: input.stream !== false,
         tintHostQuote: input.tintHostQuote !== false,
         clarify: input.clarify === 'proceed' ? 'proceed' : 'ask',
       };
@@ -237,13 +236,6 @@ window.__ModuleLoader__.load({
 
     // Polling is a nicety, so a host page without timers (or a test sandbox)
     // must degrade to "no progress", never to a crash on click.
-    function startPolling(tick, milliseconds) {
-      if (typeof setInterval !== 'function') return () => {};
-      const handle = setInterval(tick, milliseconds);
-      return () => {
-        if (typeof clearInterval === 'function') clearInterval(handle);
-      };
-    }
 
     // Phase names arrive from the host. An unrecognised phase still renders
     // (as the generic wording) so a newer host never blanks the panel.
@@ -1656,7 +1648,6 @@ window.__ModuleLoader__.load({
       const runRef = React.useRef(null);
       const [notice, setNotice] = React.useState(null);
       const [undo, setUndo] = React.useState(null);
-      const [anchor, setAnchor] = React.useState({ left: 0, top: 0 });
       // `pending` holds the result of one optimizer round: either the questions
       // that must be answered before a rewrite is possible, or a preview the
       // user has to accept. Nothing is written to the composer while it is set.
@@ -1890,42 +1881,17 @@ window.__ModuleLoader__.load({
         const wait = { id: waitRef.current.id + 1, cancelled: false };
         waitRef.current = wait;
         setBusy(true);
-        setProgress({ phase: 'plan', chars: 0, tail: '' });
         setBusySince(Date.now());
         setElapsed(0);
-        // Progress arrives out of band: the command channel answers once, at the
-        // very end, so the panel asks the host what the run is doing meanwhile.
-        let stopPolling = () => {};
-        const poll = async () => {
-          if (waitRef.current !== wait || wait.cancelled) {
-            stopPolling();
-            return;
-          }
-          try {
-            const answer = await commands.execute(sessionId,
-              `/optimize-progress ${JSON.stringify({ runId })}`, []);
-            if (waitRef.current !== wait || wait.cancelled) return;
-            const execution = answer && answer.ok ? answer.value : null;
-            const commandResult = execution && execution.result;
-            if (!commandResult || commandResult.kind !== 'success' || !commandResult.text) return;
-            let info = null;
-            try {
-              info = JSON.parse(commandResult.text);
-            } catch {
-              info = null;
-            }
-            if (!info || info.missing) return;
-            if (info.done) {
-              stopPolling();
-              return;
-            }
-            setProgress({ phase: info.phase, chars: info.chars, tail: info.tail });
-          } catch {
-            // Progress is a nicety; a failed poll must never break the run.
-          }
-        };
-        if (settingsRef.current.stream) stopPolling = startPolling(poll, 300);
-        pollStopRef.current = () => { stopPolling(); };
+        // Progress used to arrive out of band: a polling command asked the host
+        // what the run was doing every 300 ms. Every command execution appends
+        // a `command/run` + `command/done` pair to the transcript, so that poll
+        // buried the conversation under dozens of `>- optimize-progress` lines.
+        // The panel now reports local elapsed time only; the single
+        // `/optimize-prompt` call below still awaits the finished answer and
+        // never logs anything the reader has to scroll past.
+        setProgress(null);
+        pollStopRef.current = () => {};
         try {
           // JSON.stringify escapes every newline into the two characters `\n`,
           // so the payload is already a single line and needs no extra
@@ -1989,7 +1955,6 @@ window.__ModuleLoader__.load({
         } catch (error) {
           showNotice(translateFailure(error && error.message));
         } finally {
-          stopPolling();
           setProgress(null);
           setBusy(false);
         }
@@ -2235,6 +2200,20 @@ window.__ModuleLoader__.load({
         return { width, maxHeight, viewportWidth, viewportHeight };
       };
 
+      // Floating notices and the working panel have no selection to anchor to.
+      // They used to inherit `anchor` (which stays at 0,0 until a selection
+      // exists), so they piled up in the top-left corner on top of the DSH
+      // mark. Centre them on the window instead.
+      const floatingSpot = (width, height, ratio) => {
+        const viewportWidth = window.innerWidth || 1024;
+        const viewportHeight = window.innerHeight || 768;
+        const share = typeof ratio === 'number' ? ratio : 0.42;
+        return {
+          left: `${Math.max(12, Math.round((viewportWidth - width) / 2))}px`,
+          top: `${Math.max(12, Math.round(viewportHeight * share - height / 2))}px`,
+        };
+      };
+
       const clampPanel = (candidate) => {
         const geometry = panelGeometry();
         const width = candidate.width || geometry.width;
@@ -2361,8 +2340,7 @@ window.__ModuleLoader__.load({
         ? createPortal(h('div', {
           style: {
             ...CARD_STYLE,
-            left: `${anchor.left}px`,
-            top: `${anchor.top}px`,
+            ...floatingSpot(340, 132),
             maxWidth: '340px',
             zIndex: 2147483602,
           },
@@ -2616,8 +2594,7 @@ window.__ModuleLoader__.load({
             key: 'notice',
             style: {
               position: 'fixed',
-              left: `${anchor.left}px`,
-              top: `${anchor.top}px`,
+              ...floatingSpot(280, 36, 0.88),
               zIndex: 2147483601,
               pointerEvents: 'none',
               ...NO_DRAG,
@@ -2662,8 +2639,6 @@ window.__ModuleLoader__.load({
         setTitle: '引用与提示词优化',
         setShortcut: '用 Alt+O 直接优化',
         setShortcutHint: '关掉之后只有点输入框旁的小鲸鱼才会开始，避免误触',
-        setStream: '显示生成进度',
-        setStreamHint: '等待时显示当前阶段与已经生成的文字；关掉只显示已用时间',
         setClarify: '缺信息时先问我',
         setClarifyHint: '问过再改写，结果更准；选「直接写」就先按现有信息改，事后再让你确认',
         setClarifyAsk: '先问我',
@@ -2736,8 +2711,6 @@ window.__ModuleLoader__.load({
               setTitle: strings.setTitle,
               setShortcut: strings.setShortcut,
               setShortcutHint: strings.setShortcutHint,
-              setStream: strings.setStream,
-              setStreamHint: strings.setStreamHint,
               setClarify: strings.setClarify,
               setClarifyHint: strings.setClarifyHint,
               setClarifyAsk: strings.setClarifyAsk,
@@ -2808,8 +2781,6 @@ window.__ModuleLoader__.load({
               setTitle: 'Quotes & prompt optimizer',
               setShortcut: 'Alt+O starts an optimization',
               setShortcutHint: 'Turn it off to require the fish button, so a stray shortcut cannot start a run',
-              setStream: 'Show generation progress',
-              setStreamHint: 'While waiting, show the current phase and the text generated so far; off keeps only the elapsed time',
               setClarify: 'Ask me first when something is missing',
               setClarifyHint: 'Answering first makes the rewrite more accurate; "just write" uses what is already there and lets you confirm afterwards',
               setClarifyAsk: 'Ask me',
@@ -2836,8 +2807,6 @@ window.__ModuleLoader__.load({
         setTitle: 'Quotes & prompt optimizer',
         setShortcut: 'Alt+O starts an optimization',
         setShortcutHint: 'Turn it off to require the fish button, so a stray shortcut cannot start a run',
-        setStream: 'Show generation progress',
-        setStreamHint: 'While waiting, show the current phase and the text generated so far; off keeps only the elapsed time',
         setClarify: 'Ask me first when something is missing',
         setClarifyHint: 'Answering first makes the rewrite more accurate; "just write" uses what is already there and lets you confirm afterwards',
         setClarifyAsk: 'Ask me',
@@ -2951,13 +2920,6 @@ window.__ModuleLoader__.load({
               type: 'checkbox',
               checked: current.shortcut !== false,
               onChange: (event) => update({ shortcut: Boolean(event.target.checked) }),
-            })),
-          row('stream', strings.setStream, strings.setStreamHint,
-            h('input', {
-              key: 'input',
-              type: 'checkbox',
-              checked: current.stream !== false,
-              onChange: (event) => update({ stream: Boolean(event.target.checked) }),
             })),
           row('tintHostQuote', strings.setTint, strings.setTintHint,
             h('input', {

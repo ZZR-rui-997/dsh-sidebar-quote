@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Document quote",
-    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. The whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review. While it works you see the phase, the text arriving and can cancel (a late answer is thrown away); Alt+O starts it from the keyboard, the preview can copy or try another take, quoted passages stay in a jump-back list, and the shortcut, progress and ask-first default are on the plugin settings page, plus a tint for the conversation's own quote button.",
+    "description": "Select text in a sidebar document preview and ask about it right there; the selection and your question are added to the composer. Frame a picture to attach its file, page and area plus a saved crop, and drop a file onto the sidebar to open it. The whale beside the composer rewrites the draft into an executable prompt: it first checks for real gaps, asks at most two questions when the answer would change everything, then shows the rewrite for review. While it works you see the elapsed time and can cancel (a late answer is thrown away); Alt+O starts it from the keyboard, the preview can copy or try another take, quoted passages stay in a jump-back list, and the shortcut and ask-first default are on the plugin settings page, plus a tint for the conversation's own quote button.",
     "detail": "docs/DETAIL.md"
   },
   "quote": "Quote & ask",
@@ -63,8 +63,6 @@
   "setTitle": "Quotes & prompt optimizer",
   "setShortcut": "Alt+O starts an optimization",
   "setShortcutHint": "Turn it off to require the fish button, so a stray shortcut cannot start a run",
-  "setStream": "Show generation progress",
-  "setStreamHint": "While waiting, show the current phase and the text generated so far; off keeps only the elapsed time",
   "setClarify": "Ask me first when something is missing",
   "setClarifyHint": "Answering first makes the rewrite more accurate; \"just write\" uses what is already there and lets you confirm afterwards",
   "setClarifyAsk": "Ask me",
